@@ -177,6 +177,13 @@ class QLotRmsFFN(nn.Module):
         else:
             gate = pg.forward_from_branches(y_F, y_I)
             up = pu.forward_from_branches(y_F, y_I)
+        # Q-LOT-DC+ optional low-rank residual correction (uses unquantized y_I)
+        cg = pg.lowrank_correction(y_I)
+        if cg is not None:
+            gate = (gate.float() + cg.float()).to(torch.float16)
+        cu = pu.lowrank_correction(y_I)
+        if cu is not None:
+            up = (up.float() + cu.float()).to(torch.float16)
         h = self.act_fn(gate) * up
         return self.down_proj(h.to(self.down_proj.weight.dtype))
 
@@ -245,10 +252,14 @@ def patch_model(
         packed_gate = PackedProjection.from_linear(
             mlp.gate_proj, routing, gamma, beta, cfg, backend=backend,
             bias_corr=getattr(routing, "bias_corr_gate", None),
+            lowrank_A=getattr(routing, "lowrank_gate_A", None),
+            lowrank_B=getattr(routing, "lowrank_gate_B", None),
         )
         packed_up = PackedProjection.from_linear(
             mlp.up_proj, routing, gamma, beta, cfg, backend=backend,
             bias_corr=getattr(routing, "bias_corr_up", None),
+            lowrank_A=getattr(routing, "lowrank_up_A", None),
+            lowrank_B=getattr(routing, "lowrank_up_B", None),
         )
 
         # Construct the FFN FIRST so it captures the original norm reference,

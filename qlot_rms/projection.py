@@ -324,6 +324,8 @@ class PackedProjection(nn.Module):
         cache_dequant_weight: bool = False,
         diag_alpha: Optional[torch.Tensor] = None,
         bias_corr: Optional[torch.Tensor] = None,
+        lowrank_A: Optional[torch.Tensor] = None,
+        lowrank_B: Optional[torch.Tensor] = None,
     ):
         super().__init__()
         self.register_buffer("W_F", W_F, persistent=False)
@@ -341,6 +343,11 @@ class PackedProjection(nn.Module):
             "diag_alpha", diag_alpha if diag_alpha is not None else None, persistent=False)
         self.register_buffer(
             "bias_corr", bias_corr if bias_corr is not None else None, persistent=False)
+        # Q-LOT-DC+ optional low-rank residual correction: z += (y_I @ A) @ B
+        self.register_buffer(
+            "lowrank_A", lowrank_A if lowrank_A is not None else None, persistent=False)
+        self.register_buffer(
+            "lowrank_B", lowrank_B if lowrank_B is not None else None, persistent=False)
         self.grms_group_size = grms_group_size
         self.eps = eps
         self.w_group_size = w_group_size
@@ -387,6 +394,8 @@ class PackedProjection(nn.Module):
         backend: Optional[ProjectionBackend] = None,
         apply_mean_comp: Optional[bool] = None,
         bias_corr: Optional[torch.Tensor] = None,
+        lowrank_A: Optional[torch.Tensor] = None,
+        lowrank_B: Optional[torch.Tensor] = None,
     ) -> "PackedProjection":
         if backend is None:
             backend = get_backend(cfg.backend)
@@ -452,6 +461,8 @@ class PackedProjection(nn.Module):
             cache_dequant_weight=getattr(cfg, "cache_dequant_weight", True),
             diag_alpha=diag_alpha,
             bias_corr=bias_corr.to(device).float() if bias_corr is not None else None,
+            lowrank_A=lowrank_A.to(device).float() if lowrank_A is not None else None,
+            lowrank_B=lowrank_B.to(device).float() if lowrank_B is not None else None,
         )
 
     def forward_from_branches(
@@ -505,6 +516,13 @@ class PackedProjection(nn.Module):
             z = z + self.bias_corr.float()
         return z.to(torch.float16)
 
+    def lowrank_correction(self, y_I: torch.Tensor) -> Optional[torch.Tensor]:
+        """Optional Q-LOT-DC+ low-rank residual correction (y_I @ A) @ B, or None."""
+        if self.lowrank_A is None or self.lowrank_B is None:
+            return None
+        from .lowrank import apply_lowrank
+        return apply_lowrank(y_I, self.lowrank_A, self.lowrank_B)
+
     def forward(self, u: torch.Tensor) -> torch.Tensor:
         """Self-contained forward from pre-affine ``u`` (original channel order)."""
         alpha = self.diag_alpha.to(u.dtype) if self.diag_alpha is not None else None
@@ -521,4 +539,8 @@ class PackedProjection(nn.Module):
             use_grms=self.use_grms,
             int_alpha=alpha,
         )
-        return self.forward_from_branches(y_F, y_I)
+        z = self.forward_from_branches(y_F, y_I)
+        corr = self.lowrank_correction(y_I)
+        if corr is not None:
+            z = (z.float() + corr.float()).to(torch.float16)
+        return z

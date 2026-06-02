@@ -45,6 +45,7 @@ from .quant import (
     channel_quantile,
 )
 from .diagcomp import compute_alpha
+from .lowrank import fit_lowrank
 from .sadnd import (
     proxy_distortion_subset,
     aggregate_distortion,
@@ -234,10 +235,7 @@ def calibrate(
     GroupRMS / mu_g / activation-scale estimation.
     """
     cfg.validate()
-    if routing_method == "output_aware_sadnd":
-        raise NotImplementedError(
-            "routing_score='output_aware_sadnd' is a stub; use 'sadnd' or 'magnitude'.")
-    if routing_method not in ("sadnd", "random", "magnitude"):
+    if routing_method not in ("sadnd", "random", "magnitude", "output_aware_sadnd"):
         raise ValueError(f"unknown routing_method {routing_method!r}")
 
     def _log(m):
@@ -297,12 +295,22 @@ def calibrate(
         delta_tilde = aggregate_distortion(stacked, cfg.lambda_agg)
         C = delta_tilde.numel()
         mag = absmean_sum[i] / max(1, absmean_cnt[i])
-        score = mag if routing_method == "magnitude" else delta_tilde
+        if routing_method == "magnitude":
+            score = mag
+        elif routing_method == "output_aware_sadnd":
+            # weight per-input-channel by gate/up column L2 norms (nn.Linear [out,in])
+            mlp = layer_modules[i].mlp
+            wg = mlp.gate_proj.weight.data.float().norm(dim=0).cpu()   # [C]
+            wu = mlp.up_proj.weight.data.float().norm(dim=0).cpu()     # [C]
+            score = delta_tilde * (wg + wu)
+        else:  # sadnd
+            score = delta_tilde
 
         # choose fp_ratio for this layer
         fp_ratio_layer = cfg.fp_ratio
         fp_errors = None
-        if cfg.fp_budget_mode == "error_bounded" and routing_method in ("sadnd", "magnitude"):
+        if cfg.fp_budget_mode == "error_bounded" and \
+                routing_method in ("sadnd", "magnitude", "output_aware_sadnd"):
             gamma, beta = affine[i]
             fp_ratio_layer, fp_errors = _select_fp_ratio_error_bounded(
                 routing_method, score, delta_tilde, cfg,
@@ -311,8 +319,8 @@ def calibrate(
                 gamma=gamma, beta=beta,
             )
 
-        if routing_method == "sadnd":
-            fp_idx, int_idx, perm, mask = assign_channels(delta_tilde, fp_ratio_layer)
+        if routing_method in ("sadnd", "output_aware_sadnd"):
+            fp_idx, int_idx, perm, mask = assign_channels(score, fp_ratio_layer)
         elif routing_method == "magnitude":
             fp_idx, int_idx, perm, mask = magnitude_routing(mag, fp_ratio_layer)
         else:  # random
@@ -440,24 +448,41 @@ def calibrate(
             y_I, cfg.p_act, cfg.qmax, cfg.eps_scale, dim=0
         )
 
-        # --- optional projection bias correction (gate / up) ---
+        # --- optional projection corrections: bias (gate/up) + low-rank residual ---
         bias_corr_gate = bias_corr_up = None
-        if cfg.use_projection_bias_correction:
+        lr_gate_A = lr_gate_B = lr_up_A = lr_up_B = None
+        do_bias = cfg.use_projection_bias_correction and cfg.bias_corr_scope != "none"
+        if do_bias or cfg.use_lowrank_correction:
             mlp = layer_modules[i].mlp
             dev = mlp.gate_proj.weight.device
             ii = int_idx.to(dev)
-            yf = y_I.to(dev)
-            a = act_scales.to(dev)
             inv = (1.0 / diag_alpha.to(dev)) if diag_alpha is not None else None
+            a = act_scales.to(dev)
+            ntok = min(y_I.shape[0], max(cfg.grms_gate_max_tokens, cfg.lowrank_max_tokens))
+            yf = y_I[:ntok].to(dev)
+            yq = quantize_activation_int8(yf, a, cfg.qmax)
             for name, store in (("gate_proj", "g"), ("up_proj", "u")):
                 W_eff = getattr(mlp, name).weight.data[:, ii].float()
                 if inv is not None:
                     W_eff = W_eff * inv
-                bc = _projection_bias_corr(yf, W_eff, a, cfg).float().cpu()
+                z_ref = torch.matmul(yf, W_eff.t())
+                z_q = torch.matmul(
+                    yq, fake_quantize_weight_w8_g128(W_eff, cfg.w8_group_size, cfg.qmax).t())
+                resid = z_ref - z_q                       # quant residual [ntok, O]
+                bc = None
+                if do_bias:
+                    bc = resid.mean(dim=0)
+                    resid = resid - bc                    # low-rank fits the post-bias residual
+                    bc = bc.float().cpu()
+                A = B = None
+                if cfg.use_lowrank_correction:
+                    nlr = min(yf.shape[0], cfg.lowrank_max_tokens)
+                    A, B = fit_lowrank(yf[:nlr], resid[:nlr], cfg.lowrank_rank)
+                    A, B = A.float().cpu(), B.float().cpu()
                 if store == "g":
-                    bias_corr_gate = bc
+                    bias_corr_gate, lr_gate_A, lr_gate_B = bc, A, B
                 else:
-                    bias_corr_up = bc
+                    bias_corr_up, lr_up_A, lr_up_B = bc, A, B
 
         layers[i] = LayerRouting(
             layer_index=i,
@@ -487,6 +512,10 @@ def calibrate(
             fp_budget_errors=r.get("fp_errors"),
             bias_corr_gate=bias_corr_gate,
             bias_corr_up=bias_corr_up,
+            lowrank_gate_A=lr_gate_A,
+            lowrank_gate_B=lr_gate_B,
+            lowrank_up_A=lr_up_A,
+            lowrank_up_B=lr_up_B,
         )
         _log(
             f"layer {i}: C={layers[i].num_channels} K_F={layers[i].k_fp} "

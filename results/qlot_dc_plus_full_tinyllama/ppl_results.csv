@@ -1,0 +1,5 @@
+C,bias_corr,diag_comp,diag_comp_mode,eval_chunks,fp_budget,fp_ratio,grms,k_fp,mean_comp,ppl,routed_layers,seconds,selected_fp_ratio,seq_len,variant
+,,,,165,,,,,,8.026745796203613,,12.3,,2048,fp16
+2048,False,False,,165,fixed,0.0,False,0,False,8.03104305267334,22,131.0,0.0,2048,int8_ptq
+2048,False,False,,165,fixed,0.04,False,81,False,8.0299654006958,22,126.3,0.04,2048,sadnd
+2048,True,True,median_scale,165,fixed,0.04,False,81,False,8.029440879821777,22,128.5,0.04,2048,config

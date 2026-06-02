@@ -185,10 +185,13 @@ def test_bias_correction_vectors_saved_and_runs():
     assert torch.isfinite(out).all()
 
 
-def test_output_aware_sadnd_is_stub():
+def test_output_aware_sadnd_now_implemented():
+    # output_aware_sadnd was a stub in plain Q-LOT-DC; Q-LOT-DC+ implements it.
     from qlot_rms.calibration import calibrate
     m = _tiny()
     cfg = _cfg(routing_score="output_aware_sadnd")
-    with pytest.raises(NotImplementedError):
-        calibrate(m, _Tok(), cfg, device="cpu", routing_method="output_aware_sadnd",
-                  allow_synthetic=True, batch_size=2)
+    plan = calibrate(m, _Tok(), cfg, device="cpu", routing_method="output_aware_sadnd",
+                     allow_synthetic=True, batch_size=2)
+    for lr in plan.layers.values():
+        assert lr.perm.tolist() == lr.fp_indices.tolist() + lr.int_indices.tolist()
+        assert lr.k_fp == int(cfg.fp_ratio * lr.num_channels)

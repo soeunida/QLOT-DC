@@ -87,16 +87,30 @@ class QLotRmsConfig:
     diag_comp_beta: float = 0.5             # smoothquant_like exponent
     diag_comp_scope: str = "int_only"
 
-    # --- Error-bounded FP budget (per-layer fp_ratio selection) ---
-    fp_budget_mode: str = "fixed"           # "fixed" | "error_bounded"
+    # --- FP budget ---
+    # "fixed"             : use fp_ratio for every layer.
+    # "error_bounded"     : per-layer fp_ratio by a calibration error proxy.
+    # "validation_search" : the selection script sweeps fp_ratio_candidates and
+    #                       picks the lowest validation PPL (PPL is measured by
+    #                       eval/select_qlot_dc_plus.py, NOT inside calibrate()).
+    fp_budget_mode: str = "fixed"
     error_bound_metric: str = "activation_mse"  # "activation_mse" | "output_mse"
     error_bound: float = 0.01
     fp_ratio_candidates: List[float] = field(
         default_factory=lambda: [0.0, 0.01, 0.02, 0.04, 0.06, 0.08, 0.10]
     )
 
-    # --- optional projection bias correction ---
+    # --- optional projection bias correction (Q-LOT-DC / DC+) ---
     use_projection_bias_correction: bool = False
+    # "none" | "gate_up" (per-projection) | "ffn_input" (down_proj-input correction;
+    # for SwiGLU this currently aliases to gate_up -- see docs).
+    bias_corr_scope: str = "gate_up"
+
+    # --- optional low-rank residual correction (Q-LOT-DC+, off by default) ---
+    use_lowrank_correction: bool = False
+    lowrank_rank: int = 4
+    lowrank_scope: str = "gate_up"
+    lowrank_max_tokens: int = 512           # tokens used to fit the residual (bounds cost)
 
     # --- backend ---
     # "torch_reference" is the default correctness backend (no custom kernels).
@@ -162,14 +176,16 @@ class QLotRmsConfig:
             raise ValueError("p_proxy and p_act must be in (0, 1)")
         if self.qmax <= 0:
             raise ValueError("qmax must be positive")
-        if self.method not in ("qlot_rms", "qlot_dc"):
-            raise ValueError(f"method must be qlot_rms|qlot_dc, got {self.method!r}")
+        if self.method not in ("qlot_rms", "qlot_dc", "qlot_dc_plus"):
+            raise ValueError(f"invalid method {self.method!r}")
         if self.routing_score not in ("sadnd", "magnitude", "output_aware_sadnd"):
             raise ValueError(f"invalid routing_score {self.routing_score!r}")
         if self.diag_comp_mode not in ("none", "median_scale", "smoothquant_like"):
             raise ValueError(f"invalid diag_comp_mode {self.diag_comp_mode!r}")
-        if self.fp_budget_mode not in ("fixed", "error_bounded"):
+        if self.fp_budget_mode not in ("fixed", "error_bounded", "validation_search"):
             raise ValueError(f"invalid fp_budget_mode {self.fp_budget_mode!r}")
+        if self.bias_corr_scope not in ("none", "gate_up", "ffn_input"):
+            raise ValueError(f"invalid bias_corr_scope {self.bias_corr_scope!r}")
         if self.error_bound_metric not in ("activation_mse", "output_mse"):
             raise ValueError(f"invalid error_bound_metric {self.error_bound_metric!r}")
         if not (self.diag_comp_alpha_min > 0 and
@@ -281,6 +297,13 @@ class LayerRouting:
     bias_corr_gate: Optional[torch.Tensor] = None   # float [O]
     bias_corr_up: Optional[torch.Tensor] = None     # float [O]
 
+    # --- optional low-rank residual correction (Q-LOT-DC+) ---
+    # correction added at inference: z += (y_I @ A) @ B   (per routed projection)
+    lowrank_gate_A: Optional[torch.Tensor] = None    # float [C_int, r]
+    lowrank_gate_B: Optional[torch.Tensor] = None    # float [r, O]
+    lowrank_up_A: Optional[torch.Tensor] = None      # float [C_int, r]
+    lowrank_up_B: Optional[torch.Tensor] = None      # float [r, O]
+
     def summary(self) -> Dict[str, Any]:
         """JSON-friendly summary (no big tensors)."""
         return {
@@ -309,6 +332,8 @@ class LayerRouting:
             "selected_fp_ratio": self.selected_fp_ratio,
             "fp_budget_errors": self.fp_budget_errors,
             "bias_corr_applied": bool(self.bias_corr_gate is not None),
+            "lowrank_applied": bool(self.lowrank_gate_A is not None),
+            "lowrank_rank": int(self.lowrank_gate_A.shape[1]) if self.lowrank_gate_A is not None else 0,
             "act_scales_min": float(self.act_scales.min()) if self.act_scales.numel() else None,
             "act_scales_max": float(self.act_scales.max()) if self.act_scales.numel() else None,
         }
