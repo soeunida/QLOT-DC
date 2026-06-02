@@ -8,6 +8,7 @@ checkpoints/
 runs/
 wandb/
 eval/_sanity_out/
+artifacts/
 *.pt
 *.pth
 *.bin

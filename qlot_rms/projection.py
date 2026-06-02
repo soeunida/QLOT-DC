@@ -227,11 +227,61 @@ class CustomPackedBackend(ProjectionBackend):
         "See CustomPackedBackend docstring for the CUDA/Triton TODO list."
     )
 
+    experimental = True
+
+    @staticmethod
+    def available() -> bool:
+        """True only if a real packed kernel can actually run (Triton + CUDA)."""
+        try:
+            from .kernels.triton_packed import triton_available
+            return triton_available()
+        except Exception:  # noqa: BLE001
+            return False
+
     def fp_matmul(self, *args, **kwargs):  # noqa: D401
+        # The elementwise-split (fp_matmul/int_matmul) path is NOT wired for the
+        # custom backend; use packed_forward (a fused, branched entry) instead.
         raise NotImplementedError(self._MSG)
 
     def int_matmul(self, *args, **kwargs):  # noqa: D401
         raise NotImplementedError(self._MSG)
+
+    def packed_forward(self, *args, **kwargs):
+        return custom_packed_forward(*args, **kwargs)
+
+
+def custom_packed_forward(
+    x_fp,            # [T, K_F]  FP-branch activation (y_F)
+    x_int,           # [T, C_int] INT-branch activation (y_I, post-affine/alpha)
+    w_fp,            # [O, K_F]  FP weight slice
+    w_int_packed,    # [O, C_int] packed/fake-quant INT weight (alpha-inversed)
+    act_scales,      # [C_int]   frozen per-input-channel activation scales
+    weight_scales=None,   # per-group weight scales (unused by the fp32 prototype)
+    alpha=None,           # [C_int] Q-LOT-DC scale (already folded; informational)
+    bias=None,            # [O]
+    bias_corr=None,       # [O]
+    metadata=None,        # dict (group_size, qmax, ...)
+):
+    """EXPERIMENTAL fused branched forward for ONE routed projection.
+
+    Drop-in entry for the future ``custom_packed`` kernel. The current prototype
+    dispatches to the Triton FP32-GEMM scaffold (``kernels/triton_packed``),
+    matching the ``torch_reference`` cached path within tolerance. Raises
+    ``NotImplementedError`` if no real kernel is available (never silently falls
+    back). **No speedup is claimed.**
+    """
+    from .kernels.triton_packed import packed_projection_forward, triton_available
+    if not triton_available():
+        raise NotImplementedError(
+            "custom_packed is experimental and requires a working Triton+CUDA "
+            "kernel; none is available. Use backend='torch_reference'.")
+    md = metadata or {}
+    qmax = int(md.get("qmax", 127))
+    yq = quantize_activation_int8(x_int, act_scales, qmax=qmax).float()
+    return packed_projection_forward(
+        x_fp=x_fp, yq=yq, w_fp=w_fp, w_int_dq=w_int_packed,
+        bias=bias, bias_corr=bias_corr,
+    )
 
 
 def get_backend(name: str) -> ProjectionBackend:

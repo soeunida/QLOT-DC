@@ -73,6 +73,22 @@ def check_layer(lr, model_layer=None):
     else:
         c["grms_disabled_ok"] = True  # routing-only: no GroupRMS metadata required
 
+    # Q-LOT-DC: when static diagonal compensation is enabled, alpha_c must exist
+    # and have length == k_int (packed-INT order); no runtime normalization.
+    if lr.diag_comp_applied:
+        c["diag_alpha_present"] = lr.diag_alpha is not None
+        c["diag_alpha_len_eq_k_int"] = (lr.diag_alpha is not None
+                                        and lr.diag_alpha.numel() == c_int)
+        c["diag_alpha_finite"] = (lr.diag_alpha is not None
+                                  and bool(torch.isfinite(lr.diag_alpha).all()))
+    else:
+        c["diag_comp_disabled_ok"] = True
+
+    # bias correction vectors (optional) must match output dim if present
+    if lr.bias_corr_gate is not None or lr.bias_corr_up is not None:
+        c["bias_corr_pair_present"] = (lr.bias_corr_gate is not None
+                                       and lr.bias_corr_up is not None)
+
     # packable weights (optional, needs the model layer)
     if model_layer is not None:
         mlp = model_layer.mlp
@@ -129,20 +145,33 @@ def main():
         all_ok = all_ok and ok
         grms_enabled += int(bool(lr.grms_enabled))
 
+    try:
+        from qlot_rms.projection import CustomPackedBackend
+        cp_available = bool(CustomPackedBackend.available())
+    except Exception:  # noqa: BLE001
+        cp_available = False
+    dc_layers = sum(int(bool(lr.diag_comp_applied)) for lr in plan.layers.values())
+
     report = {
         "ready": all_ok,
         "num_layers": len(plan.layers),
         "grms_enabled_layers": grms_enabled,
-        "backend_note": ("Artifacts validated for packing. custom_packed is still "
-                         "a stub (NotImplementedError) until a real kernel exists. "
-                         "No speedup is implied by readiness."),
+        "diag_comp_layers": dc_layers,
+        "custom_packed_experimental": True,
+        "custom_packed_kernel_available": cp_available,
+        "backend_note": ("Artifacts validated for packing. custom_packed is "
+                         "EXPERIMENTAL: it runs only via packed_forward with a real "
+                         "Triton/CUDA kernel and never silently falls back. "
+                         "torch_reference remains the default. No speedup is implied "
+                         "by readiness."),
         "per_layer": per_layer,
     }
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w") as f:
         json.dump(report, f, indent=2)
     print(f"[readiness] ready={all_ok}  layers={len(plan.layers)}  "
-          f"grms_enabled={grms_enabled}")
+          f"grms_enabled={grms_enabled}  diag_comp={dc_layers}  "
+          f"custom_packed_experimental=True kernel_available={cp_available}")
     if not all_ok:
         bad = [i for i, v in per_layer.items() if not v["ok"]]
         print(f"[readiness] FAILED layers: {bad}")

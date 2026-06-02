@@ -141,6 +141,20 @@ def main():
     ap.add_argument("--allow_synthetic", action="store_true")
     args = ap.parse_args()
 
+    # custom_packed is experimental: fail clearly up-front, never fake results.
+    if args.backend == "custom_packed":
+        from qlot_rms.projection import CustomPackedBackend
+        if not CustomPackedBackend.available():
+            print("[bench] ERROR: backend='custom_packed' is experimental and no "
+                  "working Triton/CUDA kernel is available. Refusing to fake "
+                  "results. Use --backend torch_reference.")
+        else:
+            print("[bench] ERROR: custom_packed is experimental and NOT wired into "
+                  "the full model forward yet (only the one-projection "
+                  "packed_forward prototype is correctness-tested). Refusing to "
+                  "fake end-to-end results. Use --backend torch_reference.")
+        sys.exit(2)
+
     os.makedirs(args.out_dir, exist_ok=True)
     model, tok = load_model(args.model, args.device)
     vocab = model.config.vocab_size
