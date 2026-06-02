@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+cache/
+hf_cache/
+.cache/
+checkpoints/
+runs/
+wandb/
+eval/_sanity_out/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+*.log
