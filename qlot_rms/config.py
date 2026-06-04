@@ -112,6 +112,22 @@ class QLotRmsConfig:
     lowrank_scope: str = "gate_up"
     lowrank_max_tokens: int = 512           # tokens used to fit the residual (bounds cost)
 
+    # --- Q-LOT-OBC: Output-aware Block Correction (final MLP-output correction) ---
+    # Corrects the WHOLE MLP block output (after down_proj) instead of gate/up
+    # separately, capturing the SiLU * (gate*up) nonlinearity. Static, fit offline,
+    # accept-only per layer (enabled only if it lowers the MLP-output MSE).
+    use_block_output_correction: bool = False
+    block_correction_mode: str = "none"     # "none" | "bias" | "affine" | "lowrank"
+    block_lowrank_rank: int = 4
+    block_correction_accept_rule: str = "mlp_mse"   # "mlp_mse" | "validation_ppl"
+    block_correction_margin: float = 0.0005         # required relative MSE reduction
+    block_correction_scope: str = "all_layers"      # "all_layers" | "selected_layers"
+    block_correction_max_layers: Optional[int] = None
+    block_correction_metric_save: bool = True
+    block_correction_max_tokens: int = 4096         # tokens used to fit (bounds cost)
+    block_affine_a_min: float = 0.5
+    block_affine_a_max: float = 2.0
+
     # --- backend ---
     # "torch_reference" is the default correctness backend (no custom kernels).
     # "custom_packed" is a clean stub for a future CUDA/Triton branched kernel.
@@ -176,8 +192,10 @@ class QLotRmsConfig:
             raise ValueError("p_proxy and p_act must be in (0, 1)")
         if self.qmax <= 0:
             raise ValueError("qmax must be positive")
-        if self.method not in ("qlot_rms", "qlot_dc", "qlot_dc_plus"):
+        if self.method not in ("qlot_rms", "qlot_dc", "qlot_dc_plus", "qlot_obc"):
             raise ValueError(f"invalid method {self.method!r}")
+        if self.block_correction_mode not in ("none", "bias", "affine", "lowrank"):
+            raise ValueError(f"invalid block_correction_mode {self.block_correction_mode!r}")
         if self.routing_score not in ("sadnd", "magnitude", "output_aware_sadnd"):
             raise ValueError(f"invalid routing_score {self.routing_score!r}")
         if self.diag_comp_mode not in ("none", "median_scale", "smoothquant_like"):
@@ -304,6 +322,18 @@ class LayerRouting:
     lowrank_up_A: Optional[torch.Tensor] = None      # float [C_int, r]
     lowrank_up_B: Optional[torch.Tensor] = None      # float [r, O]
 
+    # --- Q-LOT-OBC: block-output correction (applied after down_proj) ---
+    block_corr_mode: str = "none"            # "none" | "bias" | "affine" | "lowrank"
+    block_corr_enabled: bool = False
+    block_bias: Optional[torch.Tensor] = None        # float [hidden]
+    block_affine_a: Optional[torch.Tensor] = None    # float [hidden]
+    block_affine_b: Optional[torch.Tensor] = None    # float [hidden]
+    block_lowrank_A: Optional[torch.Tensor] = None   # float [hidden, r]
+    block_lowrank_B: Optional[torch.Tensor] = None   # float [r, hidden]
+    block_mse_before: Optional[float] = None
+    block_mse_after: Optional[float] = None
+    block_corr_reason: str = ""
+
     def summary(self) -> Dict[str, Any]:
         """JSON-friendly summary (no big tensors)."""
         return {
@@ -334,6 +364,11 @@ class LayerRouting:
             "bias_corr_applied": bool(self.bias_corr_gate is not None),
             "lowrank_applied": bool(self.lowrank_gate_A is not None),
             "lowrank_rank": int(self.lowrank_gate_A.shape[1]) if self.lowrank_gate_A is not None else 0,
+            "block_corr_mode": self.block_corr_mode,
+            "block_corr_enabled": bool(self.block_corr_enabled),
+            "block_mse_before": self.block_mse_before,
+            "block_mse_after": self.block_mse_after,
+            "block_corr_reason": self.block_corr_reason,
             "act_scales_min": float(self.act_scales.min()) if self.act_scales.numel() else None,
             "act_scales_max": float(self.act_scales.max()) if self.act_scales.numel() else None,
         }

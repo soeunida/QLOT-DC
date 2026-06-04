@@ -523,4 +523,21 @@ def calibrate(
             f"mu_g[mean]={float(mu_g_groups.mean()):.4f}"
         )
 
-    return RoutingPlan(config=cfg, layers=layers)
+    plan = RoutingPlan(config=cfg, layers=layers)
+
+    # --- Q-LOT-OBC: fit + accept-gate block-output corrections (optional) ---
+    if cfg.use_block_output_correction and cfg.block_correction_mode != "none":
+        from .block_correction import fit_block_corrections
+        _log(f"fitting block-output correction (mode={cfg.block_correction_mode}) ...")
+        val_chunks = None
+        if cfg.block_correction_accept_rule == "validation_ppl":
+            # small held-out slice (train split, different seed -> disjoint from
+            # both the fitting tokens and the final TEST set)
+            val_chunks = build_calibration_chunks(
+                tokenizer, seq_len=cfg.calibration_seq_len, num_chunks=8,
+                seed=cfg.seed + 9973, allow_synthetic=allow_synthetic)
+        fit_block_corrections(model, plan, cfg, chunks, device=device,
+                              batch_size=batch_size, verbose=verbose,
+                              val_chunks=val_chunks)
+
+    return plan

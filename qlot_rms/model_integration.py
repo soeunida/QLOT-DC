@@ -145,6 +145,39 @@ class QLotRmsFFN(nn.Module):
         self._fp_idx = routing.fp_indices
         self._int_idx = routing.int_indices
 
+        # --- Q-LOT-OBC block-output correction (applied after down_proj) ---
+        dev = down_proj.weight.device
+        self._block_mode = "none"
+        self._block_bias = self._block_a = self._block_b = None
+        self._block_A = self._block_B = None
+        if getattr(routing, "block_corr_enabled", False):
+            m = routing.block_corr_mode
+            self._block_mode = m
+            if m == "bias" and routing.block_bias is not None:
+                self._block_bias = routing.block_bias.to(dev).float()
+            elif m == "affine" and routing.block_affine_a is not None:
+                self._block_a = routing.block_affine_a.to(dev).float()
+                self._block_b = routing.block_affine_b.to(dev).float()
+            elif m == "lowrank" and routing.block_lowrank_A is not None:
+                self._block_A = routing.block_lowrank_A.to(dev).float()
+                self._block_B = routing.block_lowrank_B.to(dev).float()
+            else:
+                self._block_mode = "none"  # enabled but tensors missing -> no-op
+
+    def _apply_block_correction(self, out, hidden_states):
+        """Static block-output correction (after down_proj). No-op if disabled."""
+        m = self._block_mode
+        if m == "none":
+            return out
+        o = out.float()
+        if m == "bias":
+            o = o + self._block_bias
+        elif m == "affine":
+            o = o * self._block_a + self._block_b
+        elif m == "lowrank":
+            o = o + torch.matmul(torch.matmul(hidden_states.float(), self._block_A), self._block_B)
+        return o.to(out.dtype)
+
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # hidden_states is the raw residual-stream input (LN2 is now Identity).
         u = pre_affine_normalize(hidden_states, self.original_norm)  # fp32, orig order
@@ -185,7 +218,8 @@ class QLotRmsFFN(nn.Module):
         if cu is not None:
             up = (up.float() + cu.float()).to(torch.float16)
         h = self.act_fn(gate) * up
-        return self.down_proj(h.to(self.down_proj.weight.dtype))
+        out = self.down_proj(h.to(self.down_proj.weight.dtype))
+        return self._apply_block_correction(out, hidden_states)
 
 
 # --------------------------------------------------------------------------- #
@@ -244,41 +278,45 @@ def patch_model(
                 f"layer {idx} mlp lacks gate_proj/up_proj/down_proj; unsupported."
             )
 
-        gamma = norm.weight
-        beta = getattr(norm, "bias", None)
-
-        # Build packed projections (mean-comp or Q-LOT-DC alpha folded into INT
-        # columns; optional per-projection bias correction).
-        packed_gate = PackedProjection.from_linear(
-            mlp.gate_proj, routing, gamma, beta, cfg, backend=backend,
-            bias_corr=getattr(routing, "bias_corr_gate", None),
-            lowrank_A=getattr(routing, "lowrank_gate_A", None),
-            lowrank_B=getattr(routing, "lowrank_gate_B", None),
-        )
-        packed_up = PackedProjection.from_linear(
-            mlp.up_proj, routing, gamma, beta, cfg, backend=backend,
-            bias_corr=getattr(routing, "bias_corr_up", None),
-            lowrank_A=getattr(routing, "lowrank_up_A", None),
-            lowrank_B=getattr(routing, "lowrank_up_B", None),
-        )
-
-        # Construct the FFN FIRST so it captures the original norm reference,
-        # THEN swap in Identity for the layer norm and the FFN for the mlp.
-        ffn = QLotRmsFFN(
-            original_norm=norm,
-            packed_gate=packed_gate,
-            packed_up=packed_up,
-            down_proj=mlp.down_proj,
-            act_fn=getattr(mlp, "act_fn"),
-            routing=routing,
-            cfg=cfg,
-        )
-
+        ffn = build_qlot_ffn(layer, routing, cfg, backend)
         originals[idx] = {"norm": norm, "mlp": mlp}
         layer.post_attention_layernorm = nn.Identity()
         layer.mlp = ffn
 
     return PatchHandle(model=model, originals=originals)
+
+
+def build_qlot_ffn(layer, routing, cfg, backend=None):
+    """Construct a QLotRmsFFN for one decoder layer (does NOT mutate the model).
+
+    Used by patch_model and by the block-correction fitter (which needs to run
+    the quantized MLP output y_q on captured inputs without patching).
+    """
+    if backend is None:
+        backend = get_backend(cfg.backend)
+    norm = layer.post_attention_layernorm
+    mlp = layer.mlp
+    if not _is_supported_mlp(mlp):
+        raise ValueError("mlp lacks gate_proj/up_proj/down_proj; unsupported.")
+    gamma = norm.weight
+    beta = getattr(norm, "bias", None)
+    packed_gate = PackedProjection.from_linear(
+        mlp.gate_proj, routing, gamma, beta, cfg, backend=backend,
+        bias_corr=getattr(routing, "bias_corr_gate", None),
+        lowrank_A=getattr(routing, "lowrank_gate_A", None),
+        lowrank_B=getattr(routing, "lowrank_gate_B", None),
+    )
+    packed_up = PackedProjection.from_linear(
+        mlp.up_proj, routing, gamma, beta, cfg, backend=backend,
+        bias_corr=getattr(routing, "bias_corr_up", None),
+        lowrank_A=getattr(routing, "lowrank_up_A", None),
+        lowrank_B=getattr(routing, "lowrank_up_B", None),
+    )
+    return QLotRmsFFN(
+        original_norm=norm, packed_gate=packed_gate, packed_up=packed_up,
+        down_proj=mlp.down_proj, act_fn=getattr(mlp, "act_fn"),
+        routing=routing, cfg=cfg,
+    )
 
 
 def unpatch_model(handle: PatchHandle) -> None:

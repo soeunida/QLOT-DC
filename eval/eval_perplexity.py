@@ -189,9 +189,10 @@ def main():
     # resolve default variant set by method of the supplied --config
     if args.variants is None:
         base_method = base_cfg_dict(args).get("method", "qlot_rms")
-        if base_method == "qlot_dc_plus":
-            # the supplied --config IS the selected DC+ method; compare it (run
-            # as-is via the "config" variant) against fp16 / int8_ptq / sadnd.
+        if base_method in ("qlot_dc_plus", "qlot_obc"):
+            # the supplied --config IS the selected method; compare it (run as-is
+            # via the "config" variant) against fp16 / int8_ptq / sadnd. sadnd
+            # inherits the config's fp_ratio -> an EQUAL-FP-BUDGET comparison.
             args.variants = ["fp16", "int8_ptq", "sadnd", "config"]
         elif base_method == "qlot_dc":
             args.variants = ["fp16", "int8_ptq", "sadnd",
