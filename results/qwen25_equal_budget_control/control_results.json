@@ -1,0 +1,64 @@
+{
+  "model": "Qwen/Qwen2.5-7B",
+  "seq_len": 2048,
+  "max_chunks": 64,
+  "backend": "torch_reference",
+  "fp16_ppl": 6.5810699462890625,
+  "note": "Equal-FP-budget control. PPL only; no speedup. SADND vs Q-LOT-DC+ at identical fp_ratio isolates DC's contribution.",
+  "rows": [
+    {
+      "variant": "fp16",
+      "fp_ratio": null,
+      "ppl": 6.5810699462890625
+    },
+    {
+      "variant": "int8_ptq",
+      "fp_ratio": 0.0,
+      "ppl": 6.588685035705566,
+      "dc": false,
+      "bias_corr": false
+    },
+    {
+      "variant": "sadnd",
+      "fp_ratio": 0.06,
+      "ppl": 6.585901260375977,
+      "dc": false,
+      "bias_corr": false
+    },
+    {
+      "variant": "qlot_dc_plus",
+      "fp_ratio": 0.06,
+      "ppl": 6.585221290588379,
+      "dc": true,
+      "bias_corr": false
+    },
+    {
+      "variant": "sadnd",
+      "fp_ratio": 0.1,
+      "ppl": 6.585816383361816,
+      "dc": false,
+      "bias_corr": false
+    },
+    {
+      "variant": "qlot_dc_plus",
+      "fp_ratio": 0.1,
+      "ppl": 6.585507869720459,
+      "dc": true,
+      "bias_corr": false
+    },
+    {
+      "variant": "sadnd",
+      "fp_ratio": 0.2,
+      "ppl": 6.584866046905518,
+      "dc": false,
+      "bias_corr": false
+    },
+    {
+      "variant": "qlot_dc_plus",
+      "fp_ratio": 0.2,
+      "ppl": 6.585293769836426,
+      "dc": true,
+      "bias_corr": false
+    }
+  ]
+}

@@ -73,3 +73,48 @@ On the validation split the winner cleared the margin
   not clear the strict margin over SADND.
 - Result files: `results/qlot_dc_plus_select_tinyllama/` (selection) and
   `results/qlot_dc_plus_full_tinyllama/` (full test).
+
+---
+
+## Q-LOT-DC+ on Qwen2.5-7B (larger model)
+
+Re-ran the full pipeline (selection on a small validation split, then full test)
+on **Qwen/Qwen2.5-7B** to test beyond TinyLlama's near-lossless regime.
+
+### Selection (small val, seq 1024, 32 chunks)
+Winner: **`qlot_dc_adaptive_fp`** (DC median, no bias-corr, no low-rank),
+**fp_ratio = 0.20** (the max candidate), val PPL 7.0961, cleared the margin vs
+`min(int8=7.1034, sadnd@fp0.06=7.1001)`. Note the adaptive search chose the
+*largest* FP budget — a hint the gain is budget-driven.
+
+### Full test (seq 2048, 145 chunks)
+| variant | PPL | FP ratio |
+|---|---|---|
+| fp16 | 6.7971 | — |
+| int8_ptq | 6.8056 | 0.00 |
+| sadnd | 6.8018 | 0.20 |
+| selected Q-LOT-DC+ | 6.8026 | 0.20 |
+
+Strict margin: `min(int8, sadnd) − 0.001 = 6.8008`; DC+ = 6.8026 → **not cleared**.
+At equal FP budget, DC+ is **+0.0009 worse** than SADND.
+
+### Equal-budget control (seq 2048, 64 chunks) — isolates DC's contribution
+fp16 = 6.5811, int8_ptq(fp0) = 6.5887.
+
+| fp_ratio | SADND | Q-LOT-DC+ | Δ(DC+ − SADND) | Δ(DC+ − int8) |
+|---|---|---|---|---|
+| 0.06 | 6.5859 | 6.5852 | −0.0007 | −0.0035 |
+| 0.10 | 6.5858 | 6.5855 | −0.0003 | −0.0032 |
+| 0.20 | 6.5849 | 6.5853 | +0.0004 | −0.0034 |
+
+### Conclusion (Qwen2.5-7B)
+- At **equal FP budget**, Q-LOT-DC+ vs SADND is within **±0.0007 PPL** (noise-level,
+  no consistent direction, below the 0.001 margin) → **DC is quality-neutral**.
+- The advantage over INT8 PTQ (~0.003 at all budgets) is **FP-budget-driven**, not
+  from diagonal compensation (SADND captures the same gain).
+- Consistent with TinyLlama: **Static Diagonal Compensation is safe but not a
+  quality win in the INT8-near-lossless regime.** A decisive test of DC would
+  require a regime where INT8 actually degrades (e.g., W4 / lower-bit).
+- No speedup claim; `torch_reference` correctness-only.
+- Result files: `results/qlot_dc_plus_select_qwen25_7b/`,
+  `results/qlot_dc_plus_full_qwen25_7b/`, `results/qwen25_equal_budget_control/`.
