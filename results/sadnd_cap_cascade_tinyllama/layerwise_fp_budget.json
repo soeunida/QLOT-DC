@@ -1,0 +1,138 @@
+{
+  "winner": "sadnd_cap_global_packing",
+  "winner_fp": 0.2,
+  "layers": {
+    "0": {
+      "k_fp": 707,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.34521484375,
+      "budget_policy": "global"
+    },
+    "1": {
+      "k_fp": 571,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.27880859375,
+      "budget_policy": "global"
+    },
+    "2": {
+      "k_fp": 704,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.34375,
+      "budget_policy": "global"
+    },
+    "3": {
+      "k_fp": 515,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.25146484375,
+      "budget_policy": "global"
+    },
+    "4": {
+      "k_fp": 371,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.18115234375,
+      "budget_policy": "global"
+    },
+    "5": {
+      "k_fp": 385,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.18798828125,
+      "budget_policy": "global"
+    },
+    "6": {
+      "k_fp": 319,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.15576171875,
+      "budget_policy": "global"
+    },
+    "7": {
+      "k_fp": 313,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.15283203125,
+      "budget_policy": "global"
+    },
+    "8": {
+      "k_fp": 309,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.15087890625,
+      "budget_policy": "global"
+    },
+    "9": {
+      "k_fp": 284,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.138671875,
+      "budget_policy": "global"
+    },
+    "10": {
+      "k_fp": 327,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.15966796875,
+      "budget_policy": "global"
+    },
+    "11": {
+      "k_fp": 313,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.15283203125,
+      "budget_policy": "global"
+    },
+    "12": {
+      "k_fp": 308,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.150390625,
+      "budget_policy": "global"
+    },
+    "13": {
+      "k_fp": 324,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.158203125,
+      "budget_policy": "global"
+    },
+    "14": {
+      "k_fp": 293,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.14306640625,
+      "budget_policy": "global"
+    },
+    "15": {
+      "k_fp": 337,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.16455078125,
+      "budget_policy": "global"
+    },
+    "16": {
+      "k_fp": 305,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.14892578125,
+      "budget_policy": "global"
+    },
+    "17": {
+      "k_fp": 324,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.158203125,
+      "budget_policy": "global"
+    },
+    "18": {
+      "k_fp": 390,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.1904296875,
+      "budget_policy": "global"
+    },
+    "19": {
+      "k_fp": 448,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.21875,
+      "budget_policy": "global"
+    },
+    "20": {
+      "k_fp": 478,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.2333984375,
+      "budget_policy": "global"
+    },
+    "21": {
+      "k_fp": 686,
+      "num_channels": 2048,
+      "selected_fp_ratio": 0.3349609375,
+      "budget_policy": "global"
+    }
+  }
+}

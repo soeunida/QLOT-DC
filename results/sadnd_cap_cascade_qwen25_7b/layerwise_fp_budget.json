@@ -1,0 +1,174 @@
+{
+  "winner": "sadnd_cap_cascade_marginal",
+  "winner_fp": 0.2,
+  "layers": {
+    "0": {
+      "k_fp": 714,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.19921875,
+      "budget_policy": "cascade_marginal"
+    },
+    "1": {
+      "k_fp": 40,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.011160714285714286,
+      "budget_policy": "cascade_marginal"
+    },
+    "2": {
+      "k_fp": 176,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.049107142857142856,
+      "budget_policy": "cascade_marginal"
+    },
+    "3": {
+      "k_fp": 513,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.14313616071428573,
+      "budget_policy": "cascade_marginal"
+    },
+    "4": {
+      "k_fp": 628,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.17522321428571427,
+      "budget_policy": "cascade_marginal"
+    },
+    "5": {
+      "k_fp": 558,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.15569196428571427,
+      "budget_policy": "cascade_marginal"
+    },
+    "6": {
+      "k_fp": 1079,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.30106026785714285,
+      "budget_policy": "cascade_marginal"
+    },
+    "7": {
+      "k_fp": 756,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.2109375,
+      "budget_policy": "cascade_marginal"
+    },
+    "8": {
+      "k_fp": 393,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.10965401785714286,
+      "budget_policy": "cascade_marginal"
+    },
+    "9": {
+      "k_fp": 250,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.06975446428571429,
+      "budget_policy": "cascade_marginal"
+    },
+    "10": {
+      "k_fp": 338,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.09430803571428571,
+      "budget_policy": "cascade_marginal"
+    },
+    "11": {
+      "k_fp": 490,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.13671875,
+      "budget_policy": "cascade_marginal"
+    },
+    "12": {
+      "k_fp": 395,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.11021205357142858,
+      "budget_policy": "cascade_marginal"
+    },
+    "13": {
+      "k_fp": 266,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.07421875,
+      "budget_policy": "cascade_marginal"
+    },
+    "14": {
+      "k_fp": 281,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.07840401785714286,
+      "budget_policy": "cascade_marginal"
+    },
+    "15": {
+      "k_fp": 373,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.10407366071428571,
+      "budget_policy": "cascade_marginal"
+    },
+    "16": {
+      "k_fp": 369,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.10295758928571429,
+      "budget_policy": "cascade_marginal"
+    },
+    "17": {
+      "k_fp": 448,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.125,
+      "budget_policy": "cascade_marginal"
+    },
+    "18": {
+      "k_fp": 495,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.13811383928571427,
+      "budget_policy": "cascade_marginal"
+    },
+    "19": {
+      "k_fp": 532,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.1484375,
+      "budget_policy": "cascade_marginal"
+    },
+    "20": {
+      "k_fp": 527,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.14704241071428573,
+      "budget_policy": "cascade_marginal"
+    },
+    "21": {
+      "k_fp": 562,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.15680803571428573,
+      "budget_policy": "cascade_marginal"
+    },
+    "22": {
+      "k_fp": 614,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.17131696428571427,
+      "budget_policy": "cascade_marginal"
+    },
+    "23": {
+      "k_fp": 792,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.22098214285714285,
+      "budget_policy": "cascade_marginal"
+    },
+    "24": {
+      "k_fp": 1046,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.29185267857142855,
+      "budget_policy": "cascade_marginal"
+    },
+    "25": {
+      "k_fp": 1870,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.5217633928571429,
+      "budget_policy": "cascade_marginal"
+    },
+    "26": {
+      "k_fp": 2073,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.5784040178571429,
+      "budget_policy": "cascade_marginal"
+    },
+    "27": {
+      "k_fp": 3492,
+      "num_channels": 3584,
+      "selected_fp_ratio": 0.9743303571428571,
+      "budget_policy": "cascade_marginal"
+    }
+  }
+}

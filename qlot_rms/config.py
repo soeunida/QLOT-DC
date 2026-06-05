@@ -48,6 +48,24 @@ class QLotRmsConfig:
         default_factory=lambda: [0.0, 0.04, 0.06, 0.10, 0.20]
     )
 
+    # --- SADND-CAP+: cascade-aware FP budget allocation ---
+    # Allocate FP budget by local sensitivity AND accumulated residual-stream
+    # quantization error (cascade), not just per-layer sensitivity. Default off.
+    use_cascade_aware_budget: bool = False
+    cascade_metric: str = "hidden_l2"       # "hidden_l2" | "mlp_output_l2" | "residual_l2"
+    cascade_beta: float = 0.9               # EMA decay for cascade accumulation
+    cascade_gamma: float = 1.0              # weight of cascade term in budget score
+    use_error_amplification: bool = False
+    amplification_weight: float = 0.5
+
+    # --- SADND-CAP+: marginal-gain FP allocation ---
+    use_marginal_gain_allocation: bool = False
+    marginal_gain_metric: str = "hidden_l2"  # "hidden_l2" | "mlp_output_l2" | "validation_ppl"
+    marginal_fp_candidates: List[float] = field(
+        default_factory=lambda: [0.0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.20]
+    )
+    global_fp_budget_ratio: Optional[float] = None   # if set, the total budget ratio
+
     # --- packing-aware INT permutation ---
     # "original"       : keep INT channels in original order
     # "scale_sorted"   : sort INT channels by activation scale (flattens W8-G128 groups)
@@ -81,7 +99,7 @@ class QLotRmsConfig:
     VALID_SCOPES = ("mlp_only",)
     VALID_BACKENDS = ("torch_reference", "custom_packed")
     VALID_ROUTING = ("sadnd", "output_aware_sadnd", "magnitude")
-    VALID_BUDGET = ("fixed", "global")
+    VALID_BUDGET = ("fixed", "global", "cascade", "marginal", "equal_budget_select")
     VALID_PERM = ("original", "scale_sorted", "scale_clustered", "packing_aware")
 
     def validate(self) -> "QLotRmsConfig":
@@ -95,6 +113,10 @@ class QLotRmsConfig:
             raise ValueError(f"invalid fp_budget_mode {self.fp_budget_mode!r}")
         if self.int_permutation_mode not in self.VALID_PERM:
             raise ValueError(f"invalid int_permutation_mode {self.int_permutation_mode!r}")
+        if self.cascade_metric not in ("hidden_l2", "mlp_output_l2", "residual_l2"):
+            raise ValueError(f"invalid cascade_metric {self.cascade_metric!r}")
+        if self.marginal_gain_metric not in ("hidden_l2", "mlp_output_l2", "validation_ppl"):
+            raise ValueError(f"invalid marginal_gain_metric {self.marginal_gain_metric!r}")
         if not (0.0 <= self.fp_ratio < 1.0):
             raise ValueError(f"fp_ratio must be in [0,1), got {self.fp_ratio}")
         if self.qmax <= 0 or self.w8_group_size <= 0:
@@ -149,6 +171,11 @@ class LayerRouting:
     routing_score: str = "sadnd"
     int_permutation_mode: str = "packing_aware"
     selected_fp_ratio: Optional[float] = None
+    # SADND-CAP+ budget diagnostics (None unless cascade/marginal allocation used)
+    cascade_local_error: Optional[float] = None
+    cascade_error: Optional[float] = None
+    budget_score: Optional[float] = None
+    budget_policy: str = "fixed"
     norm_type: str = "rmsnorm"
     routed_projections: List[str] = field(
         default_factory=lambda: ["gate_proj", "up_proj"]
@@ -162,6 +189,10 @@ class LayerRouting:
             "k_int": int(self.int_indices.numel()),
             "fp_ratio_effective": self.k_fp / max(1, self.num_channels),
             "selected_fp_ratio": self.selected_fp_ratio,
+            "budget_policy": self.budget_policy,
+            "cascade_local_error": self.cascade_local_error,
+            "cascade_error": self.cascade_error,
+            "budget_score": self.budget_score,
             "routing_score": self.routing_score,
             "int_permutation_mode": self.int_permutation_mode,
             "w8_group_size": self.w8_group_size,

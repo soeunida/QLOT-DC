@@ -1,0 +1,15 @@
+variant,fp_ratio,ppl,budget_policy,seconds
+fp16,,8.823205947875977,,
+int8_ptq,0.0,8.831304550170898,,62.8
+sadnd_fixed_original,0.06,8.82944393157959,fixed,60.5
+output_aware_sadnd_fixed_original,0.06,8.829693794250488,fixed,59.5
+sadnd_cap_global_packing,0.06,8.829473495483398,global,59.7
+sadnd_cap_cascade_budget,0.06,8.828481674194336,cascade,122.5
+sadnd_cap_marginal_gain_budget,0.06,8.829473495483398,marginal,54.8
+sadnd_cap_cascade_marginal,0.06,8.82817268371582,cascade_marginal,119.6
+sadnd_fixed_original,0.2,8.830816268920898,fixed,57.7
+output_aware_sadnd_fixed_original,0.2,8.829622268676758,fixed,57.2
+sadnd_cap_global_packing,0.2,8.826873779296875,global,55.6
+sadnd_cap_cascade_budget,0.2,8.828704833984375,cascade,123.1
+sadnd_cap_marginal_gain_budget,0.2,8.826873779296875,marginal,59.9
+sadnd_cap_cascade_marginal,0.2,8.827402114868164,cascade_marginal,125.2

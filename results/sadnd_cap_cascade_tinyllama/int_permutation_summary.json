@@ -1,0 +1,94 @@
+{
+  "winner": "sadnd_cap_global_packing",
+  "int_permutation_mode": "packing_aware",
+  "layers": {
+    "0": {
+      "k_int": 1341,
+      "int_permutation_mode": "packing_aware"
+    },
+    "1": {
+      "k_int": 1477,
+      "int_permutation_mode": "packing_aware"
+    },
+    "2": {
+      "k_int": 1344,
+      "int_permutation_mode": "packing_aware"
+    },
+    "3": {
+      "k_int": 1533,
+      "int_permutation_mode": "packing_aware"
+    },
+    "4": {
+      "k_int": 1677,
+      "int_permutation_mode": "packing_aware"
+    },
+    "5": {
+      "k_int": 1663,
+      "int_permutation_mode": "packing_aware"
+    },
+    "6": {
+      "k_int": 1729,
+      "int_permutation_mode": "packing_aware"
+    },
+    "7": {
+      "k_int": 1735,
+      "int_permutation_mode": "packing_aware"
+    },
+    "8": {
+      "k_int": 1739,
+      "int_permutation_mode": "packing_aware"
+    },
+    "9": {
+      "k_int": 1764,
+      "int_permutation_mode": "packing_aware"
+    },
+    "10": {
+      "k_int": 1721,
+      "int_permutation_mode": "packing_aware"
+    },
+    "11": {
+      "k_int": 1735,
+      "int_permutation_mode": "packing_aware"
+    },
+    "12": {
+      "k_int": 1740,
+      "int_permutation_mode": "packing_aware"
+    },
+    "13": {
+      "k_int": 1724,
+      "int_permutation_mode": "packing_aware"
+    },
+    "14": {
+      "k_int": 1755,
+      "int_permutation_mode": "packing_aware"
+    },
+    "15": {
+      "k_int": 1711,
+      "int_permutation_mode": "packing_aware"
+    },
+    "16": {
+      "k_int": 1743,
+      "int_permutation_mode": "packing_aware"
+    },
+    "17": {
+      "k_int": 1724,
+      "int_permutation_mode": "packing_aware"
+    },
+    "18": {
+      "k_int": 1658,
+      "int_permutation_mode": "packing_aware"
+    },
+    "19": {
+      "k_int": 1600,
+      "int_permutation_mode": "packing_aware"
+    },
+    "20": {
+      "k_int": 1570,
+      "int_permutation_mode": "packing_aware"
+    },
+    "21": {
+      "k_int": 1362,
+      "int_permutation_mode": "packing_aware"
+    }
+  }
+}

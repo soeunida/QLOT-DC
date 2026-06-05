@@ -56,6 +56,66 @@ Per routed layer: compute `u`; split by the frozen permutation into FP/INT;
 gate_proj and up_proj share the branch inputs. `down_proj` is unrouted. There are
 **no** correction modules.
 
+## SADND-CAP+: Cascade-aware FP Budget Allocation
+
+Standard layerwise allocation treats layers independently. But Transformer
+**residual streams propagate quantization error across layers**, so FP budget
+should also consider downstream error propagation. SADND-CAP+ adds two optional
+budget policies (both off by default; they only re-allocate the SAME total FP
+budget — `same_global_fp_budget`):
+
+- **Cascade-aware budget** (`use_cascade_aware_budget`): measure each layer's
+  relative residual-stream quantization error of a baseline (fixed-fp) plan vs
+  FP16, accumulate it, and weight the budget toward layers that are both locally
+  sensitive and contribute to downstream error:
+
+  ```
+  e_l            = ||h_l^q - h_l^fp|| / ||h_l^fp||        (cascade_metric: hidden_l2)
+  cascade_l      = beta * cascade_{l-1} + e_l             (beta = cascade_beta)
+  budget_score_l = local_sensitivity_l + gamma * cascade_l   (+ amp_weight * amp_l)
+  ```
+  The global FP budget is allocated across layers by `budget_score` (largest
+  remainder, capped per layer), preserving the total.
+
+- **Marginal-gain allocation** (`use_marginal_gain_allocation`): greedily spend
+  each FP increment where it removes the most quantization error. The proxy uses
+  per-channel SADND distortion (optionally scaled by the layer's cascade score),
+  i.e. it gives FP to the globally highest-distortion channels; with cascade
+  weighting, high-cascade layers are prioritized. A `marginal_gain_table` records
+  per-layer per-candidate gains.
+
+These are **policy/layout** choices, not correction modules. The equal-budget
+accept-only rule is unchanged: a policy is accepted only if it beats clean SADND
+at the same FP budget by `accept_only_margin`. No speedup is claimed.
+
+### Summary
+
+SADND-CAP+ = SADND-CAP + cascade-aware FP budget allocation + marginal-gain FP
+allocation. The motivation:
+
+- Clean SADND treats layers **mostly independently** (per-layer or single-ranking
+  FP/INT selection).
+- SADND-CAP+ estimates each layer's **local quantization error** and the
+  **cross-layer cascade error** it propagates through the residual stream.
+- It **reallocates the same global FP budget** toward layers that contribute more
+  to accumulated residual-stream error (no extra FP is spent — `same_global_fp_budget`).
+- **Marginal-gain allocation** spends FP channels where they reduce error most
+  (greedy global, optionally cascade-weighted).
+
+**Measured (Qwen2.5-7B, multi-seed):**
+- At **fp_ratio=0.06**, base SADND-CAP shows only a weak, sub-margin trend over
+  clean SADND (mean Δ ≈ −0.0006 PPL, 0/3 seeds clear the 0.001 margin).
+- At **fp_ratio=0.20** (seeds 0/1/2, 64 chunks), **SADND-CAP+ robustly clears the
+  equal-budget margin: mean Δ = −0.00185 PPL, std 0.00019, 3/3 seeds clear**
+  (`robust_better = True`); base SADND-CAP: mean Δ = −0.00129, 2/3 clearing. This
+  is the first method here to satisfy the multi-seed robustness criterion.
+
+The improvement is **small but consistent** (~0.03% PPL) and **budget-dependent**:
+robustness is shown at fp_ratio=0.20, not yet at fp_ratio=0.06. Whether it clears
+the margin must still be verified per model under the same equal-budget
+accept-only rule — it is not assumed to. **No speedup is claimed** because
+`torch_reference` is correctness-only. See `docs/results_summary.md` for the table.
+
 ## What was removed (negative findings)
 Q-LOT-DC (static diagonal compensation), Q-LOT-DC+ (output-aware + adaptive FP +
 bias/low-rank), and Q-LOT-OBC (block-output bias/affine/low-rank correction) were

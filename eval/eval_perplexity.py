@@ -45,12 +45,20 @@ from qlot_rms.model_integration import patch_model, unpatch_model
 
 
 VARIANTS = {
-    # name: (routing_score, overrides)   -- SADND-CAP variant matrix
+    # name: (routing_score, overrides)   -- SADND-CAP variant matrix.
+    # Baselines force fixed budget + original INT order so they are CLEAN (they do
+    # not inherit the config's global budget / packing-aware permutation). "config"
+    # runs the full SADND-CAP method as written. All non-fp16 use the config's
+    # fp_ratio => equal-FP-budget comparison.
     "fp16":                ("none",                {}),
-    "int8_ptq":            ("sadnd",               {"fp_ratio": 0.0}),
-    "sadnd":               ("sadnd",               {}),
-    "output_aware_sadnd":  ("output_aware_sadnd",  {}),
-    # raw: run the base --config exactly as written (= the SADND-CAP config)
+    "int8_ptq":            ("sadnd",               {"fp_ratio": 0.0,
+                                                    "fp_budget_mode": "fixed",
+                                                    "int_permutation_mode": "original"}),
+    "sadnd":               ("sadnd",               {"fp_budget_mode": "fixed",
+                                                    "int_permutation_mode": "original"}),
+    "output_aware_sadnd":  ("output_aware_sadnd",  {"fp_budget_mode": "fixed",
+                                                    "int_permutation_mode": "original"}),
+    # raw: run the base --config exactly as written (= the full SADND-CAP config)
     "config":              ("__raw__",             None),
 }
 

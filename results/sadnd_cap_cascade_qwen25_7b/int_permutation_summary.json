@@ -1,0 +1,118 @@
+{
+  "winner": "sadnd_cap_cascade_marginal",
+  "int_permutation_mode": "packing_aware",
+  "layers": {
+    "0": {
+      "k_int": 2870,
+      "int_permutation_mode": "packing_aware"
+    },
+    "1": {
+      "k_int": 3544,
+      "int_permutation_mode": "packing_aware"
+    },
+    "2": {
+      "k_int": 3408,
+      "int_permutation_mode": "packing_aware"
+    },
+    "3": {
+      "k_int": 3071,
+      "int_permutation_mode": "packing_aware"
+    },
+    "4": {
+      "k_int": 2956,
+      "int_permutation_mode": "packing_aware"
+    },
+    "5": {
+      "k_int": 3026,
+      "int_permutation_mode": "packing_aware"
+    },
+    "6": {
+      "k_int": 2505,
+      "int_permutation_mode": "packing_aware"
+    },
+    "7": {
+      "k_int": 2828,
+      "int_permutation_mode": "packing_aware"
+    },
+    "8": {
+      "k_int": 3191,
+      "int_permutation_mode": "packing_aware"
+    },
+    "9": {
+      "k_int": 3334,
+      "int_permutation_mode": "packing_aware"
+    },
+    "10": {
+      "k_int": 3246,
+      "int_permutation_mode": "packing_aware"
+    },
+    "11": {
+      "k_int": 3094,
+      "int_permutation_mode": "packing_aware"
+    },
+    "12": {
+      "k_int": 3189,
+      "int_permutation_mode": "packing_aware"
+    },
+    "13": {
+      "k_int": 3318,
+      "int_permutation_mode": "packing_aware"
+    },
+    "14": {
+      "k_int": 3303,
+      "int_permutation_mode": "packing_aware"
+    },
+    "15": {
+      "k_int": 3211,
+      "int_permutation_mode": "packing_aware"
+    },
+    "16": {
+      "k_int": 3215,
+      "int_permutation_mode": "packing_aware"
+    },
+    "17": {
+      "k_int": 3136,
+      "int_permutation_mode": "packing_aware"
+    },
+    "18": {
+      "k_int": 3089,
+      "int_permutation_mode": "packing_aware"
+    },
+    "19": {
+      "k_int": 3052,
+      "int_permutation_mode": "packing_aware"
+    },
+    "20": {
+      "k_int": 3057,
+      "int_permutation_mode": "packing_aware"
+    },
+    "21": {
+      "k_int": 3022,
+      "int_permutation_mode": "packing_aware"
+    },
+    "22": {
+      "k_int": 2970,
+      "int_permutation_mode": "packing_aware"
+    },
+    "23": {
+      "k_int": 2792,
+      "int_permutation_mode": "packing_aware"
+    },
+    "24": {
+      "k_int": 2538,
+      "int_permutation_mode": "packing_aware"
+    },
+    "25": {
+      "k_int": 1714,
+      "int_permutation_mode": "packing_aware"
+    },
+    "26": {
+      "k_int": 1511,
+      "int_permutation_mode": "packing_aware"
+    },
+    "27": {
+      "k_int": 92,
+      "int_permutation_mode": "packing_aware"
+    }
+  }
+}

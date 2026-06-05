@@ -57,6 +57,26 @@ accepts one only if it beats SADND at that budget by `accept_only_margin`
 (default 0.001); otherwise it falls back to the best SADND baseline and records
 `clear_improvement=false`. No method is credited for using a larger FP budget.
 
+## 6a. SADND-CAP+ (optional): cascade-aware & marginal-gain FP budget
+
+Transformer residual streams propagate quantization error across layers, so FP
+budget can be allocated by **accumulated cascade error**, not just local
+sensitivity:
+
+```
+e_l = ||h_l^q - h_l^fp|| / ||h_l^fp||      cascade_l = beta·cascade_{l-1} + e_l
+budget_score_l = local_sensitivity_l + gamma·cascade_l
+```
+
+`use_cascade_aware_budget` allocates the (same total) FP budget by `budget_score`;
+`use_marginal_gain_allocation` greedily spends FP where it removes the most error.
+Both are **off by default** and gated by the same equal-budget accept-only rule.
+Configs: `configs/sadnd_cap_cascade_select.json`, `sadnd_cap_cascade_fp0{06,10,20}.json`.
+These are policy/layout choices (no correction modules); on the near-lossless
+models tested, SADND-CAP's equal-budget effect is below the robustness margin
+(see §10), and SADND-CAP+ is not assumed to clear it — it must be verified per
+model. **No speedup is claimed.**
+
 ## 7. Quick start
 
 ```python
@@ -95,10 +115,27 @@ python eval/eval_perplexity.py --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
 ## 10. Results summary
 
 See `docs/results_summary.md`. In the INT8-near-lossless regime tested
-(TinyLlama-1.1B, Qwen2.5-7B), INT8 PTQ and SADND are already near-lossless and
+(TinyLlama-1.1B, Qwen2.5-7B), INT8 PTQ and SADND are already near-lossless, and
 the prior *correction* methods (DC/OBC) did not robustly beat SADND at equal FP
-budget. SADND-CAP keeps the routing/packing choices that are safe under the
-equal-budget accept-only rule. No speedup is claimed.
+budget.
+
+- At **fp_ratio=0.06**, a multi-seed equal-budget check on Qwen2.5-7B shows base
+  SADND-CAP is consistently but only slightly better than clean SADND (mean
+  Δ = −0.0006 PPL, **0/3** seeds clear the 0.001 margin, `robust_better = False`)
+  — a weak, sub-margin trend.
+- At **fp_ratio=0.20**, a multi-seed check (seeds 0/1/2, 64 chunks) shows
+  **SADND-CAP+ (cascade-aware + marginal-gain FP budget) robustly beats clean
+  SADND at equal FP budget: mean Δ = −0.00185 PPL, std 0.00019, 3/3 seeds clear
+  the 0.001 margin, `robust_better = True`** (base SADND-CAP: mean Δ = −0.00129,
+  2/3 clearing). This is the **first method here to satisfy the multi-seed
+  equal-budget robustness criterion**.
+
+The improvement is **small but consistent** (~0.0018 PPL on a 6.58 baseline,
+~0.03%) and **budget-dependent** — robustness is shown at fp_ratio=0.20, not yet
+at fp_ratio=0.06. SADND-CAP remains a **policy/layout framework** (routing +
+budget + packing under an equal-budget accept-only rule); SADND-CAP+'s
+cascade/marginal budget is a useful extension, **not a large quality win**.
+**No speedup is claimed.**
 
 ## 11. Limitations
 

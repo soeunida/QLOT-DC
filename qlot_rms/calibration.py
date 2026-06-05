@@ -111,10 +111,52 @@ def calibrate(model, tokenizer, cfg: QLotRmsConfig, device: str = "cpu",
             scores[i] = dt
 
     # ---- FP budget allocation ----
-    if cfg.fp_budget_mode == "global":
+    budget_policy = "fixed"
+    cascade_diag: Dict[int, dict] = {}
+    use_casc = cfg.use_cascade_aware_budget
+    use_marg = cfg.use_marginal_gain_allocation
+    if use_casc or use_marg:
+        from . import cascade_budget as cb
+        ratio = cfg.global_fp_budget_ratio if cfg.global_fp_budget_ratio is not None else cfg.fp_ratio
+        total_budget = int(ratio * sum(int(scores[i].numel()) for i in indices))
+        per_layer_scores = {i: scores[i] for i in indices}
+        if use_casc:
+            # baseline fixed-fp plan to measure residual-stream quant error
+            base_cfg = QLotRmsConfig.from_dict({**cfg.to_dict(),
+                "use_cascade_aware_budget": False, "use_marginal_gain_allocation": False,
+                "fp_budget_mode": "fixed", "int_permutation_mode": "original",
+                "fp_ratio": float(ratio)})
+            base_plan = calibrate(model, tokenizer, base_cfg, device=device,
+                                  routing_method=rs, allow_synthetic=allow_synthetic,
+                                  batch_size=batch_size, verbose=False)
+            err = cb.capture_layer_errors(model, base_plan, cfg, chunks, indices,
+                                          device=device, metric=cfg.cascade_metric)
+            e_list = [err[i] for i in indices]
+            casc = cb.compute_cascade_error(e_list, cfg.cascade_beta)
+            amp = cb.compute_error_amplification(e_list) if cfg.use_error_amplification else None
+            local_sens = [float(scores[i].sum()) for i in indices]
+            bscore = cb.build_cascade_budget_scores(local_sens, casc, cfg.cascade_gamma,
+                                                    amp, cfg.amplification_weight)
+            for j, i in enumerate(indices):
+                cascade_diag[i] = {"e": e_list[j], "cascade": casc[j], "score": float(bscore[j])}
+            if use_marg:
+                lw = {i: float(bscore[j]) for j, i in enumerate(indices)}
+                k_by = cb.allocate_by_marginal_gain(per_layer_scores, total_budget, lw)
+                budget_policy = "cascade_marginal"
+            else:
+                k_list = cb.allocate_fp_budget_from_scores(
+                    total_budget, bscore, [int(scores[i].numel()) for i in indices])
+                k_by = {indices[j]: k_list[j] for j in range(len(indices))}
+                budget_policy = "cascade"
+        else:  # marginal only
+            k_by = cb.allocate_by_marginal_gain(per_layer_scores, total_budget)
+            budget_policy = "marginal"
+    elif cfg.fp_budget_mode == "global":
         k_by = sadnd_cap.allocate_global_fp_budget(scores, cfg.fp_ratio)
+        budget_policy = "global"
     else:
         k_by = {i: int(cfg.fp_ratio * scores[i].numel()) for i in indices}
+        budget_policy = "fixed"
 
     # ---- per-layer FP/INT + packing-aware permutation ----
     routing_idx = {}
@@ -166,7 +208,12 @@ def calibrate(model, tokenizer, cfg: QLotRmsConfig, device: str = "cpu",
             w8_group_size=cfg.w8_group_size, routing_score=rs,
             int_permutation_mode=cfg.int_permutation_mode,
             selected_fp_ratio=r["k_fp"] / max(1, int(scores[i].numel())),
+            budget_policy=budget_policy,
+            cascade_local_error=cascade_diag.get(i, {}).get("e"),
+            cascade_error=cascade_diag.get(i, {}).get("cascade"),
+            budget_score=cascade_diag.get(i, {}).get("score"),
             norm_type="layernorm" if beta is not None else "rmsnorm")
-        _log(f"layer {i}: C={layers[i].num_channels} K_F={r['k_fp']} perm={cfg.int_permutation_mode}")
+        _log(f"layer {i}: C={layers[i].num_channels} K_F={r['k_fp']} "
+             f"policy={budget_policy} perm={cfg.int_permutation_mode}")
 
     return RoutingPlan(config=cfg, layers=layers)

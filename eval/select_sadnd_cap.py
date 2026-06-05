@@ -1,20 +1,22 @@
-"""SADND-CAP equal-budget selection.
+"""SADND-CAP / SADND-CAP+ equal-budget selection.
 
-Compares candidates at the SAME fp_ratio (total FP budget), so no method wins by
-using more FP. A candidate is accepted only if it beats SADND@same-fp by
-``accept_only_margin``; otherwise the best SADND baseline is selected and
-``clear_improvement=false`` is recorded.
+Compares candidates at the SAME fp_ratio (total FP budget). A candidate is
+accepted only if it beats clean SADND@same-fp by ``accept_only_margin``; else the
+strongest SADND baseline is selected and ``clear_improvement=false`` recorded.
+No method wins by using more FP. PPL only; no speedup.
 
 Candidates (each at every fp in --fp_ratios):
-  sadnd              : sadnd routing, fixed budget, original INT order (baseline)
-  output_aware       : output-aware routing, fixed budget, original INT order
-  packing_aware      : sadnd routing, fixed budget, packing-aware INT order
-  oa_packing         : output-aware routing, fixed budget, packing-aware
-  oa_global_packing  : output-aware + global FP budget + packing-aware (full SADND-CAP)
+  sadnd_fixed_original              : sadnd, fixed budget, original INT order (baseline)
+  output_aware_sadnd_fixed_original: output-aware, fixed, original
+  sadnd_cap_global_packing         : output-aware, global budget, packing-aware
+  sadnd_cap_cascade_budget         : output-aware, cascade budget, packing-aware
+  sadnd_cap_marginal_gain_budget   : output-aware, marginal-gain budget, packing-aware
+  sadnd_cap_cascade_marginal       : output-aware, cascade+marginal, packing-aware
 plus fp16 and int8_ptq (fp0) references.
 
 Outputs: sadnd_cap_selection.{json,csv}, selected_config.json,
-layerwise_fp_budget.json, int_permutation_summary.json. PPL only; no speedup.
+layerwise_fp_budget.json, cascade_budget_summary.json, marginal_gain_table.csv,
+int_permutation_summary.json.
 """
 
 import argparse
@@ -31,23 +33,34 @@ import torch
 from qlot_rms.config import QLotRmsConfig
 from qlot_rms.calibration import calibrate
 from qlot_rms.model_integration import patch_model, unpatch_model
+from qlot_rms import cascade_budget as cb
 from eval.eval_perplexity import load_model, wikitext2_ppl
 
-# name -> (routing_score, fp_budget_mode, int_permutation_mode)
+_OA = {"routing_score": "output_aware_sadnd", "int_permutation_mode": "packing_aware"}
+# name -> override dict (fp_ratio + global_fp_budget_ratio set per loop)
 CANDIDATES = {
-    "sadnd":             ("sadnd",              "fixed",  "original"),
-    "output_aware":      ("output_aware_sadnd", "fixed",  "original"),
-    "packing_aware":     ("sadnd",              "fixed",  "packing_aware"),
-    "oa_packing":        ("output_aware_sadnd", "fixed",  "packing_aware"),
-    "oa_global_packing": ("output_aware_sadnd", "global", "packing_aware"),
+    "sadnd_fixed_original": {"routing_score": "sadnd", "fp_budget_mode": "fixed",
+                             "int_permutation_mode": "original"},
+    "output_aware_sadnd_fixed_original": {"routing_score": "output_aware_sadnd",
+                             "fp_budget_mode": "fixed", "int_permutation_mode": "original"},
+    "sadnd_cap_global_packing": {**_OA, "fp_budget_mode": "global"},
+    "sadnd_cap_cascade_budget": {**_OA, "fp_budget_mode": "cascade",
+                                 "use_cascade_aware_budget": True},
+    "sadnd_cap_marginal_gain_budget": {**_OA, "fp_budget_mode": "marginal",
+                                       "use_marginal_gain_allocation": True},
+    "sadnd_cap_cascade_marginal": {**_OA, "fp_budget_mode": "cascade",
+                                   "use_cascade_aware_budget": True,
+                                   "use_marginal_gain_allocation": True},
 }
+BASELINE = "sadnd_fixed_original"
+_RESET = {"use_cascade_aware_budget": False, "use_marginal_gain_allocation": False,
+          "fp_budget_mode": "fixed", "int_permutation_mode": "original"}
 
 
-def _cfg(base, rs, budget, perm, fp):
-    d = dict(base)
-    d.update(enable_qlot_rms=True, qlot_scope="mlp_only", method="sadnd_cap",
-             routing_score=rs, fp_budget_mode=budget, int_permutation_mode=perm,
-             fp_ratio=float(fp))
+def _cfg(base, ov, fp):
+    d = dict(base); d.update(enable_qlot_rms=True, qlot_scope="mlp_only", method="sadnd_cap")
+    d.update(_RESET); d.update(ov)
+    d["fp_ratio"] = float(fp); d["global_fp_budget_ratio"] = float(fp)
     return QLotRmsConfig.from_dict(d).validate()
 
 
@@ -92,73 +105,88 @@ def main():
     fp16_ppl, _, _ = wikitext2_ppl(model, tok, args.device, args.seq_len, args.max_chunks)
     print(f"[cap] fp16 ppl={fp16_ppl:.4f}")
     rows = [{"variant": "fp16", "fp_ratio": None, "ppl": fp16_ppl}]
-
     t0 = time.time()
-    int8, _ = eval_cfg(_cfg(base, "sadnd", "fixed", "original", 0.0))
-    rows.append({"variant": "int8_ptq", "fp_ratio": 0.0, "ppl": int8, "seconds": round(time.time()-t0,1)})
+    int8, _ = eval_cfg(_cfg(base, CANDIDATES[BASELINE], 0.0))
+    rows.append({"variant": "int8_ptq", "fp_ratio": 0.0, "ppl": int8, "seconds": round(time.time()-t0, 1)})
     print(f"[cap] int8_ptq fp=0.00 ppl={int8:.4f}")
 
-    best_cfgs = {}
-    per_fp = {}
+    best_cfgs, best_plans, per_fp = {}, {}, {}
     for fp in fp_ratios:
-        sadnd_ppl = None
-        for name, (rs, budget, perm) in cand.items():
+        base_ppl = None
+        for name, ov in cand.items():
             t0 = time.time()
-            cfg = _cfg(base, rs, budget, perm, fp)
-            ppl, _ = eval_cfg(cfg)
+            cfg = _cfg(base, ov, fp)
+            ppl, plan = eval_cfg(cfg)
             rows.append({"variant": name, "fp_ratio": float(fp), "ppl": ppl,
+                         "budget_policy": next(iter(plan.layers.values())).budget_policy,
                          "seconds": round(time.time()-t0, 1)})
             best_cfgs[(name, float(fp))] = cfg
-            if name == "sadnd":
-                sadnd_ppl = ppl
-            print(f"[cap] {name:20s} fp={fp:.2f} ppl={ppl:.4f}")
+            best_plans[(name, float(fp))] = plan
+            if name == BASELINE:
+                base_ppl = ppl
+            print(f"[cap] {name:34s} fp={fp:.2f} ppl={ppl:.4f}")
         others = [(r["variant"], r["ppl"]) for r in rows
-                  if r.get("fp_ratio") == float(fp) and r["variant"] != "sadnd"]
+                  if r.get("fp_ratio") == float(fp) and r["variant"] != BASELINE]
         bname, bppl = min(others, key=lambda x: x[1])
-        per_fp[f"{fp:.2f}"] = {"sadnd_ppl": sadnd_ppl, "best_candidate": bname,
-                               "best_ppl": bppl, "delta_vs_sadnd": bppl - sadnd_ppl,
-                               "beats_sadnd_by_margin": bppl < sadnd_ppl - margin}
+        per_fp[f"{fp:.2f}"] = {"baseline_sadnd_ppl": base_ppl, "best_candidate": bname,
+                               "best_ppl": bppl, "delta_vs_sadnd": bppl - base_ppl,
+                               "beats_sadnd_by_margin": bppl < base_ppl - margin}
 
     winners = [(per_fp[f"{fp:.2f}"]["best_candidate"], float(fp), per_fp[f"{fp:.2f}"]["best_ppl"])
                for fp in fp_ratios if per_fp[f"{fp:.2f}"]["beats_sadnd_by_margin"]]
     if winners:
         wname, wfp, wppl = min(winners, key=lambda x: x[2]); clear = True
     else:
-        # fall back to the best SADND baseline
-        sadnd_rows = [(r["fp_ratio"], r["ppl"]) for r in rows if r["variant"] == "sadnd"]
-        wfp, wppl = min(sadnd_rows, key=lambda x: x[1]); wname = "sadnd"; clear = False
+        srows = [(r["fp_ratio"], r["ppl"]) for r in rows if r["variant"] == BASELINE]
+        wfp, wppl = min(srows, key=lambda x: x[1]); wname = BASELINE; clear = False
 
-    sel_cfg = best_cfgs[(wname, wfp)]
+    sel_cfg = best_cfgs[(wname, wfp)]; sel_plan = best_plans[(wname, wfp)]
     sel = {"model": args.model, "seq_len": args.seq_len, "val_chunks": args.max_chunks,
            "accept_only_margin": margin, "fp16_ppl": fp16_ppl, "int8_ptq_ppl": int8,
            "per_fp": per_fp, "winner": wname, "winner_fp": wfp, "winner_ppl": wppl,
            "clear_improvement": bool(clear),
-           "note": ("Equal-FP-budget selection: accept only if it beats SADND@same-fp "
-                    "by margin, else fall back to best SADND. PPL only; no speedup."),
+           "note": ("Equal-FP-budget selection: accept only if it beats clean SADND@same-fp "
+                    "by margin, else fall back to SADND. PPL only; no speedup."),
            "results": rows}
     json.dump(sel, open(os.path.join(args.out_dir, "sadnd_cap_selection.json"), "w"), indent=2)
     with open(os.path.join(args.out_dir, "sadnd_cap_selection.csv"), "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["variant", "fp_ratio", "ppl", "seconds"]); w.writeheader()
+        w = csv.DictWriter(f, fieldnames=["variant", "fp_ratio", "ppl", "budget_policy", "seconds"])
+        w.writeheader()
         for r in rows:
-            w.writerow({k: r.get(k) for k in ["variant", "fp_ratio", "ppl", "seconds"]})
+            w.writerow({k: r.get(k) for k in ["variant", "fp_ratio", "ppl", "budget_policy", "seconds"]})
     sel_cfg.save_json(os.path.join(args.out_dir, "selected_config.json"))
 
-    # winner per-layer FP budget + INT permutation summary
-    _, plan = eval_cfg(sel_cfg)
+    # layerwise FP budget + int permutation + cascade summary (from winner plan)
     json.dump({"winner": wname, "winner_fp": wfp,
                "layers": {int(i): {"k_fp": lr.k_fp, "num_channels": lr.num_channels,
-                                    "selected_fp_ratio": lr.selected_fp_ratio}
-                          for i, lr in plan.layers.items()}},
+                                   "selected_fp_ratio": lr.selected_fp_ratio,
+                                   "budget_policy": lr.budget_policy}
+                          for i, lr in sel_plan.layers.items()}},
               open(os.path.join(args.out_dir, "layerwise_fp_budget.json"), "w"), indent=2)
     json.dump({"winner": wname, "int_permutation_mode": sel_cfg.int_permutation_mode,
                "layers": {int(i): {"k_int": int(lr.int_indices.numel()),
                                    "int_permutation_mode": lr.int_permutation_mode}
-                          for i, lr in plan.layers.items()}},
+                          for i, lr in sel_plan.layers.items()}},
               open(os.path.join(args.out_dir, "int_permutation_summary.json"), "w"), indent=2)
+    json.dump({"winner": wname, "winner_fp": wfp,
+               "cascade_beta": sel_cfg.cascade_beta, "cascade_gamma": sel_cfg.cascade_gamma,
+               "layers": {int(i): {"local_error": lr.cascade_local_error,
+                                   "cascade_error": lr.cascade_error,
+                                   "budget_score": lr.budget_score, "k_fp": lr.k_fp}
+                          for i, lr in sel_plan.layers.items()}},
+              open(os.path.join(args.out_dir, "cascade_budget_summary.json"), "w"), indent=2)
+    # marginal-gain table from winner per-layer SADND distortion
+    mg = cb.compute_marginal_gain_table({int(i): lr.delta_tilde for i, lr in sel_plan.layers.items()},
+                                        sel_cfg.marginal_fp_candidates)
+    cands = sorted({k for r in mg.values() for k in r})
+    with open(os.path.join(args.out_dir, "marginal_gain_table.csv"), "w", newline="") as f:
+        w = csv.writer(f); w.writerow(["layer"] + cands)
+        for i in sorted(mg):
+            w.writerow([i] + [round(mg[i][c], 6) for c in cands])
 
     print(f"[cap] WINNER={wname} fp={wfp} ppl={wppl:.4f} clear_improvement={clear}")
-    print(f"[cap] wrote selection + selected_config + layerwise_fp_budget + int_permutation_summary "
-          f"to {args.out_dir}")
+    print(f"[cap] wrote selection + selected_config + layerwise_fp_budget + "
+          f"cascade_budget_summary + marginal_gain_table + int_permutation_summary to {args.out_dir}")
 
 
 if __name__ == "__main__":

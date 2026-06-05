@@ -1,0 +1,6 @@
+C,eval_chunks,fp_budget_mode,fp_ratio,int_permutation_mode,k_fp,ppl,routed_layers,routing_score,seconds,selected_fp_ratio,seq_len,variant
+,145,,,,,6.797123432159424,,,51.1,,2048,fp16
+3584,145,fixed,0.0,original,0,6.805610656738281,28,sadnd,892.4,0.0,2048,int8_ptq
+3584,145,fixed,0.06,original,215,6.803127765655518,28,sadnd,963.9,0.05998883928571429,2048,sadnd
+3584,145,fixed,0.06,original,215,6.803471565246582,28,output_aware_sadnd,952.9,0.05998883928571429,2048,output_aware_sadnd
+3584,145,global,0.06,packing_aware,275,6.801860332489014,28,output_aware_sadnd,1069.5,0.07672991071428571,2048,config

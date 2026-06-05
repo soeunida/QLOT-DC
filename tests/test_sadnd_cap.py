@@ -105,3 +105,37 @@ def test_accept_only_within_margin_falls_back():
     name, clear = equal_budget_accept_only_select(
         {"oa_packing": 7.9995}, sadnd_ppl=8.00, margin=0.001)   # only 0.0005 better
     assert name == "sadnd" and clear is False
+
+
+# --- SADND-CAP+ policy metadata via calibrate (tiny model) ---
+def test_cascade_policy_metadata_and_per_layer_fp():
+    import torch as _t
+    from transformers import LlamaConfig, LlamaForCausalLM
+    from qlot_rms.config import QLotRmsConfig
+    from qlot_rms.calibration import calibrate
+
+    class _Tok:
+        vocab_size = 256
+    _t.manual_seed(0)
+    m = LlamaForCausalLM(LlamaConfig(
+        vocab_size=256, hidden_size=64, intermediate_size=128, num_hidden_layers=4,
+        num_attention_heads=4, num_key_value_heads=4, max_position_embeddings=128,
+        tie_word_embeddings=True)).eval()
+    cfg = QLotRmsConfig(enable_qlot_rms=True, method="sadnd_cap",
+                        routing_score="output_aware_sadnd", int_permutation_mode="packing_aware",
+                        fp_ratio=0.1, global_fp_budget_ratio=0.1, use_cascade_aware_budget=True,
+                        calibration_samples=8, calibration_seq_len=16, num_calib_subsets=3,
+                        subset_size=4, act_scale_max_tokens=256)
+    plan = calibrate(m, _Tok(), cfg, device="cpu", allow_synthetic=True, batch_size=2)
+    for lr in plan.layers.values():
+        assert lr.budget_policy == "cascade"
+        # cascade_budget_summary fields populated
+        assert lr.cascade_local_error is not None
+        assert lr.cascade_error is not None
+        assert lr.budget_score is not None
+        # per-layer fp ratio stored
+        assert lr.selected_fp_ratio is not None
+        assert abs(lr.selected_fp_ratio - lr.k_fp / lr.num_channels) < 1e-9
+    # summary() exposes the diagnostics
+    s = next(iter(plan.layers.values())).summary()
+    assert "cascade_error" in s and "budget_policy" in s

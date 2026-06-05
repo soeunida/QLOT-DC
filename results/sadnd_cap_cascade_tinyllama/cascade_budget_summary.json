@@ -1,0 +1,140 @@
+{
+  "winner": "sadnd_cap_global_packing",
+  "winner_fp": 0.2,
+  "cascade_beta": 0.9,
+  "cascade_gamma": 1.0,
+  "layers": {
+    "0": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 707
+    },
+    "1": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 571
+    },
+    "2": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 704
+    },
+    "3": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 515
+    },
+    "4": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 371
+    },
+    "5": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 385
+    },
+    "6": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 319
+    },
+    "7": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 313
+    },
+    "8": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 309
+    },
+    "9": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 284
+    },
+    "10": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 327
+    },
+    "11": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 313
+    },
+    "12": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 308
+    },
+    "13": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 324
+    },
+    "14": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 293
+    },
+    "15": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 337
+    },
+    "16": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 305
+    },
+    "17": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 324
+    },
+    "18": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 390
+    },
+    "19": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 448
+    },
+    "20": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 478
+    },
+    "21": {
+      "local_error": null,
+      "cascade_error": null,
+      "budget_score": null,
+      "k_fp": 686
+    }
+  }
+}
