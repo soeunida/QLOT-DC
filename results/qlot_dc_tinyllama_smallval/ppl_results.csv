@@ -1,7 +1,0 @@
-C,bias_corr,diag_comp,diag_comp_mode,eval_chunks,fp_budget,fp_ratio,grms,k_fp,mean_comp,ppl,routed_layers,seconds,selected_fp_ratio,seq_len,variant
-,,,,32,,,,,,8.823205947875977,,2.5,,1024,fp16
-2048,False,False,,32,fixed,0.0,False,0,False,8.831304550170898,22,242.0,0.0,1024,int8_ptq
-2048,False,False,,32,fixed,0.06,False,122,False,8.829050064086914,22,231.2,0.06,1024,sadnd
-2048,False,True,median_scale,32,fixed,0.06,False,122,False,8.827292442321777,22,228.6,0.06,1024,qlot_dc_median
-2048,False,True,median_scale,32,error_bounded,0.06,False,0,False,8.827960014343262,22,254.5,0.0,1024,qlot_dc_error_bounded
-2048,True,True,median_scale,32,fixed,0.06,False,122,False,8.82548713684082,22,221.7,0.06,1024,qlot_dc_biascorr
