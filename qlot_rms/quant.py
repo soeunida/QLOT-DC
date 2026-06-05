@@ -14,10 +14,22 @@ in_features]``.  Weight quantization here groups along the input dimension
 from __future__ import annotations
 
 import math
-from typing import Tuple
+from typing import List, Tuple
 
 import torch
 import torch.nn.functional as F
+
+
+def group_sizes_for(num_channels: int, group_size: int) -> List[int]:
+    """Contiguous W8-G128 group sizes covering ``num_channels``; last may be smaller."""
+    if num_channels < 0 or group_size <= 0:
+        raise ValueError("num_channels >= 0 and group_size > 0 required")
+    sizes, rem = [], num_channels
+    while rem > 0:
+        s = min(group_size, rem)
+        sizes.append(s)
+        rem -= s
+    return sizes
 
 
 # --------------------------------------------------------------------------- #

@@ -1,16 +1,16 @@
-"""Determinism: same seed + same data => identical routing artifacts."""
+"""Determinism + artifact validity: same seed + data => identical SADND-CAP plan."""
 
 import torch
 
 from qlot_rms.calibration import calibrate
+from qlot_rms.config import RoutingPlan
 
 
-def _run(model, tok, cfg, method="sadnd"):
-    return calibrate(model, tok, cfg, device="cpu", routing_method=method,
-                     allow_synthetic=True, batch_size=2)
+def _run(model, tok, cfg):
+    return calibrate(model, tok, cfg, device="cpu", allow_synthetic=True, batch_size=2)
 
 
-def test_calibration_deterministic_sadnd(tiny_model, fake_tokenizer, small_config):
+def test_calibration_deterministic(tiny_model, fake_tokenizer, small_config):
     p1 = _run(tiny_model, fake_tokenizer, small_config)
     p2 = _run(tiny_model, fake_tokenizer, small_config)
     assert set(p1.layers) == set(p2.layers)
@@ -21,34 +21,20 @@ def test_calibration_deterministic_sadnd(tiny_model, fake_tokenizer, small_confi
         assert torch.equal(a.int_indices, b.int_indices)
         assert torch.allclose(a.delta_tilde, b.delta_tilde)
         assert torch.allclose(a.act_scales, b.act_scales)
-        assert torch.allclose(a.mu_g, b.mu_g)
-        assert torch.allclose(a.mu_g_channels, b.mu_g_channels)
 
 
-def test_calibration_deterministic_random(tiny_model, fake_tokenizer, small_config):
-    p1 = _run(tiny_model, fake_tokenizer, small_config, method="random")
-    p2 = _run(tiny_model, fake_tokenizer, small_config, method="random")
-    for i in p1.layers:
-        assert torch.equal(p1.layers[i].perm, p2.layers[i].perm)
-
-
-def test_act_scales_positive_and_frozen(tiny_model, fake_tokenizer, small_config):
+def test_artifacts_valid(tiny_model, fake_tokenizer, small_config):
     plan = _run(tiny_model, fake_tokenizer, small_config)
     for lr in plan.layers.values():
         assert lr.act_scales.numel() == lr.int_indices.numel()
-        assert torch.isfinite(lr.act_scales).all()
-        assert (lr.act_scales > 0).all()
-        # mu_g is PER-GROUP: length must equal grms_num_groups, all positive
-        assert lr.mu_g.numel() == lr.grms_num_groups
-        assert (lr.mu_g > 0).all()
-        assert torch.isfinite(lr.mu_g).all()
-        # mu_g_channels broadcasts mu_g across the INT channels
-        assert lr.mu_g_channels.numel() == lr.int_indices.numel()
+        assert bool((lr.act_scales > 0).all()) and torch.isfinite(lr.act_scales).all()
+        # static [FP, INT] permutation; valid permutation; FP block first
+        assert lr.perm.tolist() == lr.fp_indices.tolist() + lr.int_indices.tolist()
+        assert sorted(lr.perm.tolist()) == list(range(lr.num_channels))
+        assert bool(lr.mask[lr.fp_indices].all())
 
 
 def test_save_load_roundtrip(tiny_model, fake_tokenizer, small_config, tmp_path):
-    from qlot_rms.config import RoutingPlan
-
     plan = _run(tiny_model, fake_tokenizer, small_config)
     paths = plan.save(str(tmp_path))
     loaded = RoutingPlan.load(paths["pt"])

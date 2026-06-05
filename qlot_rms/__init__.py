@@ -1,29 +1,35 @@
-"""Q-LOT-RMS: From Quantization Sensitivity to Static FP/INT Layouts for INT8
-Transformer Inference.
+"""SADND-CAP: Calibration-time Adaptive FP/INT Routing and Packing for Low-Bit
+LLM Inference.
 
-A faithful, testable, modular reference implementation added as a *separate*
-feature path. It does NOT import, edit, or remove any existing PQ*/SFPA script.
-Q-LOT-RMS only changes model behavior when ``QLotRmsConfig.enable_qlot_rms`` is
-True and the model has been patched via :func:`model_integration.patch_model`.
+The single active method. It routes the Pre-LN ``LN2 -> FFN`` interface to a
+static FP16 / INT8(W8-G128) layout using:
+  1. output-aware SADND routing
+  2. global layer-wise FP budget allocation
+  3. packing-aware INT permutation
+  4. equal-budget accept-only selection
+
+Deprecated correction methods (Q-LOT-DC / DC+ / OBC, GroupRMS, diagonal/bias/
+low-rank/block corrections) were removed; see git tag
+``backup-before-final-sadnd-cap-cleanup``. The default backend is
+``torch_reference`` (fake-quantized, correctness-only); no speedup is claimed.
 
 Modules
 -------
-config            QLotRmsConfig + per-layer routing metadata dataclasses
-quant             channel quantiles, symmetric INT8 quant, simulated W8-G128
-grouprms          GroupRMS (contiguous groups, last group may be smaller)
-sadnd             SADND proxy-distortion routing + [FP, INT] permutation
-capture           pre-affine LN2/RMSNorm activation capture hooks
-data              WikiText-2 calibration chunks and random subsets
-calibration       end-to-end calibration: routing, mu_g, activation scales
+config            QLotRmsConfig + LayerRouting / RoutingPlan
+sadnd             proxy distortion + aggregation (routing primitives)
+sadnd_cap         output-aware score, global FP budget, packing-aware permutation,
+                  equal-budget accept-only selection
+quant             channel quantiles, INT8 quant, simulated W8-G128
+capture           pre-affine LN2/RMSNorm activation hooks
+data              WikiText-2 calibration chunks
+calibration       end-to-end SADND-CAP calibration
 projection        packed FP/INT reference projection + backend interface
-model_integration patch routed FFN behind the feature flag (reversible)
-
-The default backend is ``torch_reference`` and is correct without any custom
-kernels.  See ``docs/qlot_rms.md`` for scope, limitations, and how-to-run.
+model_integration reversible patch of the routed FFN
+serving_export    static per-layer serving artifact export
 """
 
 from .config import QLotRmsConfig, LayerRouting, RoutingPlan
 
 __all__ = ["QLotRmsConfig", "LayerRouting", "RoutingPlan"]
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"

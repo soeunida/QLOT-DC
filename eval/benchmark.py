@@ -42,7 +42,7 @@ import torch
 
 from qlot_rms.calibration import calibrate
 from qlot_rms.model_integration import patch_model, unpatch_model
-from eval.eval_perplexity import VARIANTS, build_cfg, load_model  # reuse
+from eval.eval_perplexity import VARIANTS, build_cfg, base_cfg_dict, load_model  # reuse
 
 
 def _sync(device):
@@ -130,7 +130,7 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--backend", default="torch_reference")
     ap.add_argument("--variants", nargs="+",
-                    default=["fp16", "sadnd_grms_meancomp"])
+                    default=["fp16", "int8_ptq", "sadnd", "config"])
     ap.add_argument("--iters", type=int, default=8)
     ap.add_argument("--warmup", type=int, default=2)
     ap.add_argument("--cache_dequant", choices=["auto", "on", "off"], default="auto",
@@ -166,7 +166,9 @@ def main():
     rows = []
     for name in args.variants:
         method, overrides = VARIANTS[name]
-        n_routed, fp_ratio_eff, grms_gs = None, None, None
+        if method == "__raw__":
+            method = base_cfg_dict(args).get("routing_score", "sadnd")
+        n_routed, fp_ratio_eff, w8_gs = None, None, None
         timing_backend = "fp16" if name == "fp16" else args.backend
         if name != "fp16":
             cfg = build_cfg(args, method, overrides)
@@ -178,7 +180,7 @@ def main():
             handle = patch_model(model, plan, cfg)
             n_routed = len(plan.layers)
             fp_ratio_eff = cfg.fp_ratio
-            grms_gs = cfg.grms_group_size
+            w8_gs = cfg.w8_group_size
         else:
             handle = None
         try:
@@ -203,7 +205,7 @@ def main():
             "peak_mb": peak,
             "routed_layers": n_routed,
             "fp_ratio": fp_ratio_eff,
-            "grms_group_size": grms_gs,
+            "w8_group_size": w8_gs,
         })
         print(f"[bench] {name:22s} {dt*1e3:8.2f}ms  {tok_s and round(tok_s):>7} tok/s  "
               f"peak={peak}  ({timing_backend})")
@@ -224,7 +226,7 @@ def main():
 
     thr_rows = [{k: r[k] for k in
                  ("variant", "timing_backend", "avg_latency_ms", "prefill_s",
-                  "tokens_per_s", "routed_layers", "fp_ratio", "grms_group_size")}
+                  "tokens_per_s", "routed_layers", "fp_ratio", "w8_group_size")}
                 for r in rows]
     mem_rows = [{"variant": r["variant"], "timing_backend": r["timing_backend"],
                  "peak_mb": r["peak_mb"]} for r in rows]

@@ -1,85 +1,112 @@
-# Q-LOT-DC
+# SADND-CAP: Calibration-Time Adaptive FP/INT Routing and Packing for Low-Bit LLM Inference
 
-**Q-LOT-DC = SADND routing + Static Diagonal Compensation + Error-bounded FP
-budget + (optional) projection bias correction** — a reference implementation
-for INT8 transformer FFN inference, derived from the Q-LOT-RMS line of work.
+SADND-CAP is a calibration-time method that lays out the Pre-LN `LN2 → FFN`
+interface of a transformer as a **static FP16 / INT8 (W8-G128)** mixture. It is
+the single active method in this repository; earlier correction attempts
+(Q-LOT-DC, Q-LOT-DC+, Q-LOT-OBC, GroupRMS, diagonal/bias/low-rank/block
+corrections) were evaluated, did **not** robustly beat SADND at equal FP budget,
+and have been removed from the active code (recoverable via git tag
+`backup-before-final-sadnd-cap-cleanup`).
 
-This is a faithful, modular, **flag-guarded** PyTorch reference. The default
-backend (`torch_reference`) is fake-quantized and **correctness-only**; it is
-not a fast INT8 path. No speedup and no paper-level reproduction is claimed.
+> The default backend (`torch_reference`) is fake-quantized and **correctness-only**.
+> **No speedup is claimed**; a real custom kernel is not implemented.
 
-## Why Q-LOT-DC (vs GroupRMS)
+## 1. What is SADND-CAP?
 
-GroupRMS divides the INT activation by a per-(token, group) RMS — a
-**token-dependent** normalization that cannot be statically inverted and that
-introduces a function shift. On TinyLlama (where INT8 PTQ is already
-near-lossless) GroupRMS *worsens* quality (per-layer gating disables it 0/22).
+For each routed MLP layer, SADND-CAP decides — once, at calibration time —
+which input channels stay FP16 and which become INT8, how the FP budget is
+shared across layers, and how INT channels are ordered for W8-G128 packing.
+Everything is frozen; inference does **no** runtime top-k / sort / dynamic
+routing.
 
-**Static Diagonal Compensation (Q-LOT-DC)** replaces it with a static,
-calibration-time, per-INT-channel scale `alpha_c` applied as a diagonal
-similarity transform that preserves the projection function *before*
-quantization:
+## 2. Method overview
 
-- activation: `y_c -> alpha_c * y_c`
-- weight (PyTorch `nn.Linear` is `[out, in]`): `W[:, c] -> W[:, c] / alpha_c` (INT columns only)
-- so `(alpha_c·y_c)·(W[:,c]/alpha_c) == y_c·W[:,c]` exactly in full precision; only
-  the subsequent per-channel INT8 quantization sees flatter, more uniform scales.
+1. **Output-aware SADND routing** — score channels by quantization sensitivity.
+2. **Global layer-wise FP budget allocation** — share one FP budget across layers.
+3. **Packing-aware INT permutation** — order INT channels for uniform W8-G128 groups.
+4. **Equal-budget accept-only selection** — keep a choice only if it beats SADND
+   at the *same* FP budget.
 
-Companion features: an **error-bounded FP budget** (per-layer `fp_ratio` chosen
-by an activation/output MSE bound) and an optional **projection bias correction**
-(static per-output `mean(z_fp − z_quant)`, off by default).
+## 3. Output-aware SADND routing
 
-## Method components
+`score_c = δ_c · (||W_gate[:,c]||₂ + ||W_up[:,c]||₂)` where `δ_c` is the relative
+INT8 proxy distortion of channel `c` (`E[(u−û)²]/E[u²]`, aggregated mean+std over
+calibration subsets) and the weight column norms (nn.Linear `[out,in]`) capture
+how heavily the channel is used. The `fp_ratio·C` highest-score channels go to
+FP16; the rest to INT8. `routing_score ∈ {sadnd, output_aware_sadnd, magnitude}`.
 
-- **SADND routing** — relative INT8 proxy distortion per channel, aggregated
-  `mean + λ·std` over calibration subsets; highest-distortion channels go to a
-  small FP16 branch, the rest to INT8 (W8-G128). Static `[FP, INT]` permutation;
-  no runtime top-k / sort.
-- **Static Diagonal Compensation** — `diag_comp_mode ∈ {median_scale, smoothquant_like}`.
-- **Error-bounded FP budget** — `fp_budget_mode ∈ {fixed, error_bounded}`.
-- **Projection bias correction** — `use_projection_bias_correction` (default off).
-- **Backends** — `torch_reference` (default, correctness-only) and a
-  `custom_packed` **stub** (`NotImplementedError`) with a documented kernel API
-  (`docs/custom_packed_kernel_plan.md`). **Real throughput requires the custom
-  packed FP16+INT8 branched kernel.**
+## 4. Global layer-wise FP budget allocation
 
-`mlp_only` scope is implemented; `mlp_attn` is an explicit `NotImplementedError`
-stub. See `docs/qlot_rms.md` for full details and limitations.
+With `fp_budget_mode="global"`, the total FP budget `⌊fp_ratio · Σ_l C_l⌋` is
+allocated by globally ranking all (layer, channel) pairs by score: a layer with
+more high-distortion channels receives more FP capacity, while the **total**
+budget is preserved (`same_global_fp_budget`). `"fixed"` uses `fp_ratio` per layer.
 
-## Install
+## 5. Packing-aware INT permutation
 
-```bash
-pip install -r requirements.txt
+INT channels are reordered so that each contiguous W8-G128 group has a more
+uniform per-channel activation scale, reducing within-group quantization error.
+Modes: `original`, `scale_sorted`, `scale_clustered`, `packing_aware` (default).
+Only INT channels are reordered; the FP block stays first; no inverse permutation
+is needed at inference.
+
+## 6. Equal-budget accept-only selection
+
+`eval/select_sadnd_cap.py` compares candidates at the **same `fp_ratio`** and
+accepts one only if it beats SADND at that budget by `accept_only_margin`
+(default 0.001); otherwise it falls back to the best SADND baseline and records
+`clear_improvement=false`. No method is credited for using a larger FP budget.
+
+## 7. Quick start
+
+```python
+from qlot_rms.config import QLotRmsConfig
+from qlot_rms.calibration import calibrate
+from qlot_rms.model_integration import patch_model, unpatch_model
+
+cfg = QLotRmsConfig.load_json("configs/sadnd_cap_fp006.json")
+plan = calibrate(model, tokenizer, cfg, device="cuda:0")
+handle = patch_model(model, plan, cfg)     # enable SADND-CAP
+# ... run inference ...
+unpatch_model(handle)                      # restore original model exactly
 ```
 
-## Run tests
+## 8. Tests
 
 ```bash
 python -m pytest tests/ -q
-python eval/run_tiny_sanity.py        # offline, CPU, no download
+python eval/run_tiny_sanity.py             # offline, CPU, no download
 ```
 
-## TinyLlama small validation (Q-LOT-DC)
+## 9. Evaluation
 
 ```bash
-HF_HUB_OFFLINE=1 python eval/eval_perplexity.py \
-    --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 --device cuda:0 \
-    --seq_len 1024 --max_chunks 32 \
-    --config configs/qlot_dc_tinyllama.json \
-    --out_dir results/qlot_dc_tinyllama_smallval
+# equal-budget selection on a small validation split
+python eval/select_sadnd_cap.py --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+    --device cuda:0 --seq_len 1024 --max_chunks 32 \
+    --config configs/sadnd_cap_select.json --out_dir results/sadnd_cap_select
+
+# full WikiText-2 test (fp16 / int8_ptq / sadnd / output_aware / config)
+python eval/eval_perplexity.py --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+    --device cuda:0 --seq_len 2048 \
+    --config configs/sadnd_cap_fp006.json --out_dir results/sadnd_cap_full
 ```
 
-This evaluates `fp16`, `int8_ptq`, `sadnd` (routing-only), and the Q-LOT-DC
-variants (`qlot_dc_median`, `qlot_dc_error_bounded`, `qlot_dc_biascorr`) and
-writes `ppl_results.json/.csv` + `metadata_summary.json`. Full test: drop
-`--max_chunks` and use `--seq_len 2048`.
+## 10. Results summary
 
-## Scope & honesty
+See `docs/results_summary.md`. In the INT8-near-lossless regime tested
+(TinyLlama-1.1B, Qwen2.5-7B), INT8 PTQ and SADND are already near-lossless and
+the prior *correction* methods (DC/OBC) did not robustly beat SADND at equal FP
+budget. SADND-CAP keeps the routing/packing choices that are safe under the
+equal-budget accept-only rule. No speedup is claimed.
 
-- `torch_reference` is fake-quantized (dequant + FP32 matmul + extra branch) and
-  is **slower than FP16** by design — correctness-only.
-- **No INT8 speedup is claimed.** Real throughput requires a custom packed
-  FP16+INT8 branched kernel (see `docs/custom_packed_kernel_plan.md`).
-- **No paper-level reproduction is claimed.** On TinyLlama, INT8 PTQ and SADND
-  routing are already near-lossless; Q-LOT-DC is a *safer* GroupRMS replacement
-  that preserves (and marginally improves) quality, not a universal gain.
+## 11. Limitations
+
+- `torch_reference` is **correctness-only** (fake quant + FP matmul); slower and
+  higher-memory than FP16 by construction.
+- **No speedup claim**; a custom packed FP16+INT8 kernel is **not** implemented
+  (`custom_packed` is a stub; see `docs/serving_layout.md`).
+- Deprecated DC/OBC/GroupRMS/correction methods were removed from the active
+  code (git tag `backup-before-final-sadnd-cap-cleanup`).
+- End-to-end integration targets Llama/Mistral/Qwen2-style Pre-LN models whose
+  MLP is fed by `post_attention_layernorm`.

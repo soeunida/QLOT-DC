@@ -1,120 +1,42 @@
-# Q-LOT-DC / Q-LOT-DC+ — Results summary (TinyLlama-1.1B)
+# Results summary
 
 All numbers are measured in this repository with the `torch_reference` backend
-(fake-quantized, correctness-only). **No speedup is claimed.** No tuning on the
-final test set: variant selection uses a small validation split; the full
-WikiText-2 test is evaluated once.
+(fake-quantized, **correctness-only**). **No speedup is claimed.** Selection uses
+a small validation split; full WikiText-2 test is evaluated once.
 
-## Q-LOT-DC+ selection (small validation split, seq_len 1024, 32 chunks)
+## Final supported method: SADND-CAP
 
-| variant | val PPL | fp_ratio |
-|---|---|---|
-| fp16 (reference) | 8.8232 | — |
-| **qlot_dc_biascorr_adaptive_fp (winner)** | **8.8236** | 0.04 |
-| qlot_dc_output_aware | 8.8245 | 0.06 |
-| qlot_dc_adaptive_fp | 8.8252 | 0.20 |
-| qlot_dc_biascorr | 8.8267 | 0.06 |
-| qlot_dc_median | 8.8270 | 0.06 |
-| sadnd | 8.8294 | 0.06 |
-| int8_ptq | 8.8313 | 0.00 |
-| qlot_dc_lowrank_r2 / r4 | 8.8359 | 0.06 |
+SADND-CAP = output-aware SADND routing + global layer-wise FP budget allocation +
+packing-aware INT permutation + equal-budget accept-only selection. It keeps only
+the routing/packing choices that are safe under the equal-budget rule (a choice
+is kept only if it beats SADND at the *same* FP budget by margin).
 
-On the validation split the winner cleared the margin
-(8.8236 < min(int8, sadnd) − 0.001 = 8.8284). Low-rank correction *hurt* here
-(8.8359) and was not selected.
+Run the equal-budget selection (`eval/select_sadnd_cap.py`) and the full test
+(`eval/eval_perplexity.py`) per the README. Outputs are written under
+`results/sadnd_cap_*`.
 
-## Q-LOT-DC+ full test (WikiText-2 test, seq_len 2048, 165 chunks)
+## Prior correction attempts — negative findings (removed from active code)
 
-| variant | PPL |
-|---|---|
-| fp16 | 8.0267 |
-| int8_ptq | 8.0310 |
-| sadnd | 8.0300 |
-| **selected Q-LOT-DC+** | **8.0294** |
+Three correction methods were implemented and evaluated, then removed (git tag
+`backup-before-final-sadnd-cap-cleanup`):
 
-### Strict margin check
-- `min(INT8, SADND) = 8.0300`
-- `threshold = 8.0300 − 0.001 = 8.0290`
-- `selected Q-LOT-DC+ = 8.0294`
-- **8.0294 > 8.0290, so the strict margin is not cleared** → `clear_improvement = False`.
+- **Q-LOT-DC** (static diagonal compensation) and **Q-LOT-DC+** (output-aware +
+  adaptive FP + projection bias / low-rank): on TinyLlama-1.1B and Qwen2.5-7B,
+  **did not robustly beat SADND at equal FP budget** (differences within ~1e-3,
+  i.e. noise; any gain over INT8 PTQ tracked the FP budget, which SADND captures
+  equally).
+- **Q-LOT-OBC** (block-output bias/affine/low-rank correction): block-bias looked
+  better on small validation but the advantage **did not generalize** to the full
+  test (Qwen2.5-7B: DC+OBC 6.8014 vs SADND 6.8008 at equal fp=0.10 — slightly
+  worse; margin not cleared). Block **low-rank** correction badly **overfit**
+  (validation PPL 8.82 → 10–12) and was caught by a validation-PPL gate.
 
-### Interpretation
-- Q-LOT-DC+ is the **best non-FP16 variant** on the full test.
-- It improves over **INT8 PTQ by 0.0016 PPL** (8.0310 → 8.0294).
-- It improves over **SADND by approximately 0.0006 PPL** (8.0300 → 8.0294).
-- However, it **does not clear the predefined 0.001 margin over the stronger
-  baseline SADND**.
-- Therefore, the result is a **modest improvement, not a decisive win**.
-- **TinyLlama is a near-lossless INT8 regime** (FP16 8.0267 vs INT8 8.0310 is
-  only +0.0043 PPL), so the available PPL gap is very small.
-- **Larger models or more aggressive quantization are needed** to test whether
-  Q-LOT-DC+ gives a decisive quality gain.
+**Conclusion:** in the INT8-near-lossless regime tested (FP16→INT8 PTQ is only a
+few ×1e-3 PPL), static *output corrections* do not provide a robust equal-budget
+quality gain over SADND. SADND-CAP therefore retains routing + packing (which are
+budget/layout choices, gated by equal-budget accept-only) and drops the
+corrections. A decisive test of corrections would require a regime where INT8
+materially degrades (e.g. W4 / lower-bit), which is out of scope here.
 
-## Selected configuration (records the actual winning candidate)
-
-`configs`/`results/qlot_dc_plus_select_tinyllama/selected_config.json`:
-
-| field | value |
-|---|---|
-| method | qlot_dc_plus |
-| routing_score | sadnd |
-| fp_ratio | 0.04 |
-| fp_budget_mode | fixed (for full test) |
-| use_static_diag_comp | true |
-| diag_comp_mode | median_scale |
-| use_projection_bias_correction | true |
-| use_lowrank_correction | false |
-
-## Caveats
-
-- **No speedup claim** — `torch_reference` is fake-quantized; `custom_packed`
-  remains experimental.
-- **No strong quality-win claim** — the full-test improvement is modest and does
-  not clear the strict margin over SADND.
-- Result files: `results/qlot_dc_plus_select_tinyllama/` (selection) and
-  `results/qlot_dc_plus_full_tinyllama/` (full test).
-
----
-
-## Q-LOT-DC+ on Qwen2.5-7B (larger model)
-
-Re-ran the full pipeline (selection on a small validation split, then full test)
-on **Qwen/Qwen2.5-7B** to test beyond TinyLlama's near-lossless regime.
-
-### Selection (small val, seq 1024, 32 chunks)
-Winner: **`qlot_dc_adaptive_fp`** (DC median, no bias-corr, no low-rank),
-**fp_ratio = 0.20** (the max candidate), val PPL 7.0961, cleared the margin vs
-`min(int8=7.1034, sadnd@fp0.06=7.1001)`. Note the adaptive search chose the
-*largest* FP budget — a hint the gain is budget-driven.
-
-### Full test (seq 2048, 145 chunks)
-| variant | PPL | FP ratio |
-|---|---|---|
-| fp16 | 6.7971 | — |
-| int8_ptq | 6.8056 | 0.00 |
-| sadnd | 6.8018 | 0.20 |
-| selected Q-LOT-DC+ | 6.8026 | 0.20 |
-
-Strict margin: `min(int8, sadnd) − 0.001 = 6.8008`; DC+ = 6.8026 → **not cleared**.
-At equal FP budget, DC+ is **+0.0009 worse** than SADND.
-
-### Equal-budget control (seq 2048, 64 chunks) — isolates DC's contribution
-fp16 = 6.5811, int8_ptq(fp0) = 6.5887.
-
-| fp_ratio | SADND | Q-LOT-DC+ | Δ(DC+ − SADND) | Δ(DC+ − int8) |
-|---|---|---|---|---|
-| 0.06 | 6.5859 | 6.5852 | −0.0007 | −0.0035 |
-| 0.10 | 6.5858 | 6.5855 | −0.0003 | −0.0032 |
-| 0.20 | 6.5849 | 6.5853 | +0.0004 | −0.0034 |
-
-### Conclusion (Qwen2.5-7B)
-- At **equal FP budget**, Q-LOT-DC+ vs SADND is within **±0.0007 PPL** (noise-level,
-  no consistent direction, below the 0.001 margin) → **DC is quality-neutral**.
-- The advantage over INT8 PTQ (~0.003 at all budgets) is **FP-budget-driven**, not
-  from diagonal compensation (SADND captures the same gain).
-- Consistent with TinyLlama: **Static Diagonal Compensation is safe but not a
-  quality win in the INT8-near-lossless regime.** A decisive test of DC would
-  require a regime where INT8 actually degrades (e.g., W4 / lower-bit).
-- No speedup claim; `torch_reference` correctness-only.
-- Result files: `results/qlot_dc_plus_select_qwen25_7b/`,
-  `results/qlot_dc_plus_full_qwen25_7b/`, `results/qwen25_equal_budget_control/`.
+No speedup is claimed; `torch_reference` is correctness-only; a real
+`custom_packed` kernel is not implemented.

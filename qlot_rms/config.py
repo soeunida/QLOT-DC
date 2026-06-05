@@ -1,17 +1,15 @@
-"""Configuration and per-layer routing metadata for Q-LOT-RMS.
+"""Configuration and per-layer routing metadata for SADND-CAP.
 
-Three dataclasses live here:
+SADND-CAP = Calibration-time Adaptive FP/INT routing And Packing:
+  1. Output-aware SADND routing
+  2. Global layer-wise FP budget allocation
+  3. Packing-aware INT permutation
+  4. Equal-budget accept-only selection
 
-* :class:`QLotRmsConfig` -- all user-facing flags / hyper-parameters.
-* :class:`LayerRouting`  -- the *frozen* per-layer artifact produced by
-  calibration (mask, permutation, FP/INT indices, GroupRMS layout, mu_g, and
-  per-channel activation scales).  Everything needed at inference time is here;
-  nothing is recomputed from data at runtime.
-* :class:`RoutingPlan`   -- a collection of all routed layers + the config.
-
-All support round-trip save/load.  ``QLotRmsConfig`` serializes to JSON;
-``LayerRouting`` carries tensors and serializes via torch (``.pt``), with a
-parallel human-readable JSON summary written alongside.
+This is the only active method. Deprecated correction methods (Q-LOT-DC,
+Q-LOT-DC+, Q-LOT-OBC, GroupRMS, diagonal/bias/low-rank/block corrections) have
+been removed; see git tag ``backup-before-final-sadnd-cap-cleanup`` for history.
+No speedup is claimed; ``torch_reference`` is correctness-only.
 """
 
 from __future__ import annotations
@@ -24,176 +22,85 @@ from typing import List, Union, Dict, Any, Optional
 import torch
 
 
-# --------------------------------------------------------------------------- #
-# User-facing configuration
-# --------------------------------------------------------------------------- #
 @dataclass
 class QLotRmsConfig:
-    """All Q-LOT-RMS knobs.  Defaults match the paper.
+    """SADND-CAP configuration. Defaults match the paper-level settings."""
 
-    Notes
-    -----
-    * ``qlot_scope="mlp_only"`` is the fully-implemented path.
-    * ``qlot_scope="mlp_attn"`` is an explicit stub and raises
-      ``NotImplementedError`` when integration is attempted (attention routing
-      is intentionally *not* silently ignored).
-    """
+    # --- master switch / scope ---
+    enable_qlot_rms: bool = False          # master flag (kept name for the patcher)
+    method: str = "sadnd_cap"              # "sadnd_cap" (only active method)
+    qlot_scope: str = "mlp_only"           # only mlp_only is implemented
 
-    # --- master switch ---
-    enable_qlot_rms: bool = False
-
-    # --- scope ---
-    # "mlp_only"  -> route the Pre-LN LN2 -> FFN (gate_proj, up_proj) interface.
-    # "mlp_attn"  -> additionally route attention input LN (STUB, not implemented).
-    qlot_scope: str = "mlp_only"
-
-    # --- routing / layout ---
-    fp_ratio: float = 0.06          # rho_F: fraction of channels kept in FP
-    grms_group_size: int = 128      # group size for INT-branch GroupRMS
-    lambda_agg: float = 1.0         # delta_tilde = mean + lambda_agg * std
-    p_proxy: float = 0.9995         # high quantile for the proxy INT8 scale
-    p_act: float = 0.999            # quantile for frozen activation scales
-    qmax: int = 127                 # INT8 symmetric max code
-
-    # which decoder layers to route. "all", a list of ints, or a stride schedule
-    # dict like {"start": 0, "stop": None, "step": 1}.
-    routed_layers: Union[str, List[int], Dict[str, Any]] = "all"
-
-    # --- calibration data ---
-    calibration_samples: int = 128  # number of WikiText-2 chunks to build
-    calibration_seq_len: int = 512  # tokens per chunk
-    num_calib_subsets: int = 5      # number of random subsets for mean+std agg
-    subset_size: int = 32           # sequences per subset
-
-    # --- method selector ---
-    # "qlot_rms" (default) -> SADND routing + (optional, gated) GroupRMS.
-    # "qlot_dc"            -> SADND routing + Static Diagonal Compensation (no
-    #                          token-dependent normalization). See use_static_diag_comp.
-    method: str = "qlot_rms"
-
-    # routing score used to rank channels for FP/INT assignment.
-    # "sadnd" (default) | "magnitude" | "output_aware_sadnd" (STUB, not implemented).
+    # --- routing ---
+    # "sadnd"              : relative INT8 proxy distortion
+    # "output_aware_sadnd" : distortion x (||W_gate[:,c]|| + ||W_up[:,c]||)
+    # "magnitude"          : mean |activation| (baseline)
     routing_score: str = "sadnd"
+    fp_ratio: float = 0.06                  # FP channel fraction (per layer, or global avg)
 
-    # --- Q-LOT-DC: Static Diagonal Compensation (GroupRMS replacement) ---
-    # Static, calibration-time, per-INT-channel scale alpha_c applied to the INT
-    # activation, with inverse scaling folded into the INT weight columns
-    # (W[:, int_indices] /= alpha_c) so the projection function is preserved
-    # before quantization. No token-dependent normalization.
-    use_static_diag_comp: bool = False
-    diag_comp_mode: str = "none"            # "none" | "median_scale" | "smoothquant_like"
-    diag_comp_alpha_min: float = 0.25
-    diag_comp_alpha_max: float = 4.0
-    diag_comp_beta: float = 0.5             # smoothquant_like exponent
-    diag_comp_scope: str = "int_only"
-
-    # --- FP budget ---
-    # "fixed"             : use fp_ratio for every layer.
-    # "error_bounded"     : per-layer fp_ratio by a calibration error proxy.
-    # "validation_search" : the selection script sweeps fp_ratio_candidates and
-    #                       picks the lowest validation PPL (PPL is measured by
-    #                       eval/select_qlot_dc_plus.py, NOT inside calibrate()).
+    # --- FP budget allocation ---
+    # "fixed"  : every layer uses fp_ratio.
+    # "global" : same TOTAL FP budget (fp_ratio * total channels) reallocated across
+    #            layers by sensitivity (same_global_fp_budget keeps the total fixed).
     fp_budget_mode: str = "fixed"
-    error_bound_metric: str = "activation_mse"  # "activation_mse" | "output_mse"
-    error_bound: float = 0.01
+    same_global_fp_budget: bool = True
     fp_ratio_candidates: List[float] = field(
-        default_factory=lambda: [0.0, 0.01, 0.02, 0.04, 0.06, 0.08, 0.10]
+        default_factory=lambda: [0.0, 0.04, 0.06, 0.10, 0.20]
     )
 
-    # --- optional projection bias correction (Q-LOT-DC / DC+) ---
-    use_projection_bias_correction: bool = False
-    # "none" | "gate_up" (per-projection) | "ffn_input" (down_proj-input correction;
-    # for SwiGLU this currently aliases to gate_up -- see docs).
-    bias_corr_scope: str = "gate_up"
+    # --- packing-aware INT permutation ---
+    # "original"       : keep INT channels in original order
+    # "scale_sorted"   : sort INT channels by activation scale (flattens W8-G128 groups)
+    # "scale_clustered": coarse scale buckets, contiguous
+    # "packing_aware"  : default packing strategy (currently = scale_sorted)
+    int_permutation_mode: str = "packing_aware"
 
-    # --- optional low-rank residual correction (Q-LOT-DC+, off by default) ---
-    use_lowrank_correction: bool = False
-    lowrank_rank: int = 4
-    lowrank_scope: str = "gate_up"
-    lowrank_max_tokens: int = 512           # tokens used to fit the residual (bounds cost)
+    # --- equal-budget accept-only selection ---
+    accept_only_margin: float = 0.001       # candidate must beat SADND@same-fp by this
 
-    # --- backend ---
-    # "torch_reference" is the default correctness backend (no custom kernels).
-    # "custom_packed" is a clean stub for a future CUDA/Triton branched kernel.
-    backend: str = "torch_reference"
+    # --- calibration data ---
+    calibration_samples: int = 128
+    calibration_seq_len: int = 512
+    num_calib_subsets: int = 5
+    subset_size: int = 32
 
-    # weight quant group size for the simulated W8-G128 path (matches paper G128)
+    # --- quant / numerics ---
+    p_proxy: float = 0.9995
+    p_act: float = 0.999
+    qmax: int = 127
     w8_group_size: int = 128
-
-    # --- ablation toggles (used by eval to express the variant matrix) ---
-    use_grms: bool = True           # apply INT-branch GroupRMS (False = routing only)
-    use_mean_comp: bool = True      # fold mu_g into INT weight columns at packing
-
-    # --- per-layer GroupRMS gating ---
-    # When True (and use_grms True), GroupRMS is NOT applied globally; each routed
-    # layer is gated by a calibration-time proxy (INT-branch output reconstruction
-    # error with vs without GroupRMS). GroupRMS is enabled for a layer only if it
-    # reduces that error by at least ``grms_gate_margin`` (relative). This avoids
-    # the function-shift cost on layers where INT8 is already near-lossless.
-    grms_gating: bool = False
-    grms_gate_margin: float = 0.0       # relative error reduction required to enable
-    grms_gate_max_tokens: int = 1024    # tokens used for the proxy (bounds cost)
-    grms_gate_tolerance_ppl: float = 0.005  # documented PPL tolerance (for future
-                                            # PPL-based gating; proxy uses error margin)
-    # cap on #tokens stored (per layer, CPU) when estimating activation scales,
-    # to bound calibration memory on large models. mu_g uses ALL tokens (streaming).
-    act_scale_max_tokens: int = 16384
-
-    # --- reference-backend-only performance flag ---
-    # When True (and backend == "torch_reference"), the static W8-G128 weight is
-    # fake-quantized ONCE at packing and cached, instead of being re-quantized on
-    # every forward.  This is numerically identical to the per-forward path
-    # (same fake-quant of a static weight) and is purely a speed optimization.
-    # It is ignored by the custom_packed backend (which carries its own packed
-    # weights).  Set False to force the original per-forward dequant path.
-    cache_dequant_weight: bool = True
-
-    # --- numerics / reproducibility ---
-    eps: float = 1e-6               # GroupRMS / distortion denominator epsilon
-    eps_scale: float = 1e-8         # floor for activation scales (eps_s)
-    seed: int = 0                   # deterministic calibration seed
-
-    # --- misc ---
+    backend: str = "torch_reference"        # "torch_reference" | "custom_packed" (stub)
+    cache_dequant_weight: bool = True       # reference-only: cache fake-quant weight
+    eps: float = 1e-6
+    eps_scale: float = 1e-8
+    act_scale_max_tokens: int = 16384       # per-layer token cap for scale estimation
+    seed: int = 0
     dataset: str = "wikitext2"
+    routed_layers: Union[str, List[int], Dict[str, Any]] = "all"
 
-    VALID_SCOPES = ("mlp_only", "mlp_attn")
+    VALID_SCOPES = ("mlp_only",)
     VALID_BACKENDS = ("torch_reference", "custom_packed")
+    VALID_ROUTING = ("sadnd", "output_aware_sadnd", "magnitude")
+    VALID_BUDGET = ("fixed", "global")
+    VALID_PERM = ("original", "scale_sorted", "scale_clustered", "packing_aware")
 
     def validate(self) -> "QLotRmsConfig":
         if self.qlot_scope not in self.VALID_SCOPES:
-            raise ValueError(
-                f"qlot_scope must be one of {self.VALID_SCOPES}, got {self.qlot_scope!r}"
-            )
+            raise ValueError(f"qlot_scope must be 'mlp_only', got {self.qlot_scope!r}")
         if self.backend not in self.VALID_BACKENDS:
-            raise ValueError(
-                f"backend must be one of {self.VALID_BACKENDS}, got {self.backend!r}"
-            )
-        if not (0.0 <= self.fp_ratio < 1.0):
-            raise ValueError(f"fp_ratio must be in [0, 1), got {self.fp_ratio}")
-        if self.grms_group_size <= 0:
-            raise ValueError("grms_group_size must be positive")
-        if not (0.0 < self.p_proxy < 1.0) or not (0.0 < self.p_act < 1.0):
-            raise ValueError("p_proxy and p_act must be in (0, 1)")
-        if self.qmax <= 0:
-            raise ValueError("qmax must be positive")
-        if self.method not in ("qlot_rms", "qlot_dc", "qlot_dc_plus"):
-            raise ValueError(f"invalid method {self.method!r}")
-        if self.routing_score not in ("sadnd", "magnitude", "output_aware_sadnd"):
+            raise ValueError(f"backend must be one of {self.VALID_BACKENDS}")
+        if self.routing_score not in self.VALID_ROUTING:
             raise ValueError(f"invalid routing_score {self.routing_score!r}")
-        if self.diag_comp_mode not in ("none", "median_scale", "smoothquant_like"):
-            raise ValueError(f"invalid diag_comp_mode {self.diag_comp_mode!r}")
-        if self.fp_budget_mode not in ("fixed", "error_bounded", "validation_search"):
+        if self.fp_budget_mode not in self.VALID_BUDGET:
             raise ValueError(f"invalid fp_budget_mode {self.fp_budget_mode!r}")
-        if self.bias_corr_scope not in ("none", "gate_up", "ffn_input"):
-            raise ValueError(f"invalid bias_corr_scope {self.bias_corr_scope!r}")
-        if self.error_bound_metric not in ("activation_mse", "output_mse"):
-            raise ValueError(f"invalid error_bound_metric {self.error_bound_metric!r}")
-        if not (self.diag_comp_alpha_min > 0 and
-                self.diag_comp_alpha_max >= self.diag_comp_alpha_min):
-            raise ValueError("require 0 < diag_comp_alpha_min <= diag_comp_alpha_max")
+        if self.int_permutation_mode not in self.VALID_PERM:
+            raise ValueError(f"invalid int_permutation_mode {self.int_permutation_mode!r}")
+        if not (0.0 <= self.fp_ratio < 1.0):
+            raise ValueError(f"fp_ratio must be in [0,1), got {self.fp_ratio}")
+        if self.qmax <= 0 or self.w8_group_size <= 0:
+            raise ValueError("qmax and w8_group_size must be positive")
         return self
 
-    # --- serialization ---
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -204,6 +111,7 @@ class QLotRmsConfig:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "QLotRmsConfig":
+        # tolerant: ignores keys from deprecated methods (DC/OBC/grms/etc.)
         known = set(cls.__dataclass_fields__)  # noqa
         return cls(**{k: v for k, v in d.items() if k in known})
 
@@ -213,172 +121,78 @@ class QLotRmsConfig:
             return cls.from_dict(json.load(f))
 
 
-# --------------------------------------------------------------------------- #
-# Frozen per-layer routing metadata (produced by calibration)
-# --------------------------------------------------------------------------- #
 @dataclass
 class LayerRouting:
-    """Static, frozen routing artifact for one routed decoder layer.
+    """Static, frozen SADND-CAP routing artifact for one routed layer.
 
-    Everything an inference forward needs is precomputed here.  No runtime
-    routing score, sort, or top-k is ever recomputed from the artifact.
-
-    Index/orientation conventions
-    ------------------------------
-    * ``C`` is the FFN input channel count (LN2 hidden size).
-    * ``fp_indices`` / ``int_indices`` index the *original* channel order.
-    * ``perm`` = ``[fp_indices, int_indices]`` (FP first, INT second), so that
-      after permutation INT channels are contiguous and GroupRMS groups are
-      contiguous blocks of ``grms_group_size``.
-    * ``mask[c] == True`` means channel c is routed to FP.
-    * ``act_scales`` is indexed in *permuted-INT* order (length ``C - K_F``),
-      i.e. it aligns with ``int_indices``.  It is shared by gate_proj & up_proj
-      because both consume the same GroupRMS'd + affine INT activation.
-    * Weight slices follow PyTorch ``nn.Linear`` orientation ``[out, in]``;
-      input channels are the *columns* (dim=1).
+    Conventions
+    -----------
+    * ``C`` = FFN input channel count.
+    * ``fp_indices`` (original order) | ``int_indices`` (PACKING-AWARE order).
+    * ``perm = [fp_indices, int_indices]`` -> after permutation INT channels are
+      contiguous and ordered for W8-G128 packing.
+    * ``mask[c] == True`` => channel c is FP.
+    * ``act_scales`` aligns with ``int_indices`` (per INT channel, permuted order).
+    * Weight slices follow nn.Linear ``[out, in]``; input channels are columns.
     """
 
     layer_index: int
-    num_channels: int                       # C
-    k_fp: int                               # K_F = floor(fp_ratio * C)
-
-    fp_indices: torch.Tensor                # long [K_F]   (original order)
-    int_indices: torch.Tensor               # long [C-K_F] (original order)
-    perm: torch.Tensor                      # long [C] = [fp_indices, int_indices]
-    mask: torch.Tensor                      # bool [C], True = FP
-
-    # SADND scores (for inspection / ablation), original channel order
-    delta_tilde: torch.Tensor               # float [C]
-
-    # GroupRMS layout over the contiguous INT block
-    grms_group_size: int
-    grms_num_groups: int
-    grms_group_sizes: List[int]             # per-group sizes (last may be smaller)
-
-    # mean RMS scale used for mean-scale compensation -- PER GROUP.
-    #   mu_g : float tensor, length == grms_num_groups.  mu_g[g] is the mean (over
-    #          calibration tokens) of the per-(token,group) RMS r_tg for group g.
-    #          Per-group is required: once high-energy channels are routed to FP,
-    #          the per-group RMS of the remaining INT channels varies sharply, so
-    #          a single scalar mis-compensates each group.
-    mu_g: torch.Tensor                      # float [grms_num_groups]
-
-    # frozen per-channel INT activation scales (permuted-INT order), length C-K_F
-    act_scales: torch.Tensor                # float [C-K_F]
-
-    # mu_g expanded to INT channels (each channel carries its group's mu_g),
-    # length C-K_F (permuted order).  This is what is folded into the INT weight
-    # columns at packing.  Derived from mu_g; cached here for direct application.
-    mu_g_channels: Optional[torch.Tensor] = None
-
-    # which projections were routed (always gate_proj / up_proj for mlp_only)
+    num_channels: int
+    k_fp: int
+    fp_indices: torch.Tensor                 # long [K_F]
+    int_indices: torch.Tensor                # long [C-K_F], packing-aware order
+    perm: torch.Tensor                       # long [C] = [fp_indices, int_indices]
+    mask: torch.Tensor                       # bool [C], True = FP
+    delta_tilde: torch.Tensor                # float [C], SADND distortion
+    act_scales: torch.Tensor                 # float [C-K_F], per INT channel
+    w8_group_size: int = 128
+    routing_score: str = "sadnd"
+    int_permutation_mode: str = "packing_aware"
+    selected_fp_ratio: Optional[float] = None
+    norm_type: str = "rmsnorm"
     routed_projections: List[str] = field(
         default_factory=lambda: ["gate_proj", "up_proj"]
     )
 
-    # bookkeeping
-    norm_type: str = "rmsnorm"              # "rmsnorm" or "layernorm"
-    mean_comp_applied: bool = False         # whether W[:, int] *= mu_g was baked in
-
-    # --- per-layer GroupRMS gating decision (see QLotRmsConfig.grms_gating) ---
-    grms_enabled: bool = True               # whether GroupRMS is applied for this layer
-    grms_gate_reason: str = ""              # human-readable reason for the decision
-    grms_proxy_err_ptq: Optional[float] = None   # INT-branch recon error w/o GroupRMS
-    grms_proxy_err_grms: Optional[float] = None  # INT-branch recon error w/ GroupRMS
-    grms_ppl_delta_if_measured: Optional[float] = None  # None unless a true PPL gate ran
-
-    # --- Q-LOT-DC: Static Diagonal Compensation metadata ---
-    diag_comp_applied: bool = False
-    diag_alpha: Optional[torch.Tensor] = None   # float [k_int], packed-INT order
-    # --- error-bounded FP budget (per-layer) ---
-    selected_fp_ratio: Optional[float] = None
-    fp_budget_errors: Optional[Dict[str, float]] = None  # {str(cand): error}
-    # --- projection bias correction vectors (per routed projection) ---
-    bias_corr_gate: Optional[torch.Tensor] = None   # float [O]
-    bias_corr_up: Optional[torch.Tensor] = None     # float [O]
-
-    # --- optional low-rank residual correction (Q-LOT-DC+) ---
-    # correction added at inference: z += (y_I @ A) @ B   (per routed projection)
-    lowrank_gate_A: Optional[torch.Tensor] = None    # float [C_int, r]
-    lowrank_gate_B: Optional[torch.Tensor] = None    # float [r, O]
-    lowrank_up_A: Optional[torch.Tensor] = None      # float [C_int, r]
-    lowrank_up_B: Optional[torch.Tensor] = None      # float [r, O]
-
     def summary(self) -> Dict[str, Any]:
-        """JSON-friendly summary (no big tensors)."""
         return {
             "layer_index": self.layer_index,
             "num_channels": self.num_channels,
             "k_fp": self.k_fp,
             "k_int": int(self.int_indices.numel()),
             "fp_ratio_effective": self.k_fp / max(1, self.num_channels),
-            "grms_group_size": self.grms_group_size,
-            "grms_num_groups": self.grms_num_groups,
-            "grms_group_sizes": list(self.grms_group_sizes),
-            "mu_g_groups": [float(x) for x in torch.as_tensor(self.mu_g).flatten().tolist()],
-            "mu_g_mean": float(torch.as_tensor(self.mu_g).float().mean()),
-            "mu_g_len": int(torch.as_tensor(self.mu_g).numel()),
-            "routed_projections": list(self.routed_projections),
-            "norm_type": self.norm_type,
-            "mean_comp_applied": bool(self.mean_comp_applied),
-            "grms_enabled": bool(self.grms_enabled),
-            "grms_gate_reason": self.grms_gate_reason,
-            "grms_proxy_err_ptq": self.grms_proxy_err_ptq,
-            "grms_proxy_err_grms": self.grms_proxy_err_grms,
-            "grms_ppl_delta_if_measured": self.grms_ppl_delta_if_measured,
-            "diag_comp_applied": bool(self.diag_comp_applied),
-            "diag_alpha_min": float(self.diag_alpha.min()) if self.diag_alpha is not None and self.diag_alpha.numel() else None,
-            "diag_alpha_max": float(self.diag_alpha.max()) if self.diag_alpha is not None and self.diag_alpha.numel() else None,
             "selected_fp_ratio": self.selected_fp_ratio,
-            "fp_budget_errors": self.fp_budget_errors,
-            "bias_corr_applied": bool(self.bias_corr_gate is not None),
-            "lowrank_applied": bool(self.lowrank_gate_A is not None),
-            "lowrank_rank": int(self.lowrank_gate_A.shape[1]) if self.lowrank_gate_A is not None else 0,
+            "routing_score": self.routing_score,
+            "int_permutation_mode": self.int_permutation_mode,
+            "w8_group_size": self.w8_group_size,
+            "norm_type": self.norm_type,
             "act_scales_min": float(self.act_scales.min()) if self.act_scales.numel() else None,
             "act_scales_max": float(self.act_scales.max()) if self.act_scales.numel() else None,
         }
 
 
-# --------------------------------------------------------------------------- #
-# Collection of all routed layers + the config used to produce them
-# --------------------------------------------------------------------------- #
 @dataclass
 class RoutingPlan:
-    """All per-layer routing artifacts plus the originating config."""
-
     config: QLotRmsConfig
-    layers: Dict[int, LayerRouting]         # layer_index -> LayerRouting
+    layers: Dict[int, LayerRouting]
 
     def save(self, out_dir: str) -> Dict[str, str]:
-        """Save a ``.pt`` payload (tensors) + a human-readable JSON summary.
-
-        Returns a dict of written paths.
-        """
         os.makedirs(out_dir, exist_ok=True)
-        pt_path = os.path.join(out_dir, "qlot_rms_routing.pt")
-        json_path = os.path.join(out_dir, "qlot_rms_routing.json")
-        cfg_path = os.path.join(out_dir, "qlot_rms_config.json")
-
-        payload = {
-            "config": self.config.to_dict(),
-            "layers": {int(k): asdict(v) for k, v in self.layers.items()},
-        }
-        torch.save(payload, pt_path)
-
+        pt_path = os.path.join(out_dir, "sadnd_cap_routing.pt")
+        json_path = os.path.join(out_dir, "sadnd_cap_routing.json")
+        cfg_path = os.path.join(out_dir, "sadnd_cap_config.json")
+        torch.save({"config": self.config.to_dict(),
+                    "layers": {int(k): asdict(v) for k, v in self.layers.items()}}, pt_path)
         self.config.save_json(cfg_path)
-        summary = {
-            "config": self.config.to_dict(),
-            "layers": {int(k): v.summary() for k, v in self.layers.items()},
-        }
         with open(json_path, "w") as f:
-            json.dump(summary, f, indent=2)
+            json.dump({"config": self.config.to_dict(),
+                       "layers": {int(k): v.summary() for k, v in self.layers.items()}},
+                      f, indent=2)
         return {"pt": pt_path, "json": json_path, "config": cfg_path}
 
     @classmethod
     def load(cls, pt_path: str) -> "RoutingPlan":
         payload = torch.load(pt_path, map_location="cpu", weights_only=False)
-        config = QLotRmsConfig.from_dict(payload["config"])
-        layers: Dict[int, LayerRouting] = {}
-        for k, v in payload["layers"].items():
-            layers[int(k)] = LayerRouting(**v)
-        return cls(config=config, layers=layers)
+        cfg = QLotRmsConfig.from_dict(payload["config"])
+        layers = {int(k): LayerRouting(**v) for k, v in payload["layers"].items()}
+        return cls(config=cfg, layers=layers)

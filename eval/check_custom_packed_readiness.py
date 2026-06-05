@@ -1,25 +1,10 @@
-"""Verify that calibration artifacts are ready for a custom_packed kernel.
+"""Verify SADND-CAP calibration artifacts are ready for a custom_packed kernel.
 
-Loads a saved RoutingPlan (qlot_rms_routing.pt) and checks that every routed
-layer carries the frozen artifacts a packed FP16+INT8 branched kernel needs:
-
-  * FP indices, INT indices
-  * static permutation P = [FP, INT]  (=> no runtime top-k / sort needed)
-  * per-channel activation scales (positive, finite, length C_int)
-  * W8-G128 packable weights (with --model: gate_proj/up_proj in_features == C)
-  * per-layer metadata (group sizes summing to C_int; K_F = C - C_int)
-  * GroupRMS metadata when enabled (mu_g length == n_groups; mu_g_channels == C_int)
-
-It does NOT run a kernel. It only validates packability and writes a JSON report.
-
-Example
--------
-    python -m eval.check_custom_packed_readiness \
-        --plan results/qlot_rms_full_selected_tinyllama/... # (a saved .pt)
-    # or produce a plan on the fly:
-    python -m eval.check_custom_packed_readiness \
-        --config configs/qlot_rms_tinyllama_sadnd_only.json \
-        --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 --device cuda:0 --calib_synthetic
+Checks each routed layer has the static artifacts a packed FP16+INT8 kernel
+needs: FP/INT indices, static permutation [FP, INT] (no runtime top-k/sort),
+positive/finite per-INT-channel activation scales, W8-G128 group layout, and
+(with --model) packable gate/up weights. custom_packed remains experimental;
+readiness does NOT imply a kernel exists or any speedup.
 """
 
 import argparse
@@ -32,86 +17,45 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import torch
 
 from qlot_rms.config import QLotRmsConfig, RoutingPlan
-from qlot_rms.grouprms import group_sizes_for
+from qlot_rms.quant import group_sizes_for
 
 
 def check_layer(lr, model_layer=None):
-    """Return (ok, checks dict) for one LayerRouting."""
     c = {}
     C = lr.num_channels
     k_fp = int(lr.fp_indices.numel())
     c_int = int(lr.int_indices.numel())
-
     c["has_fp_indices"] = k_fp == lr.k_fp
     c["has_int_indices"] = c_int == (C - k_fp)
-    # static permutation P = [FP, INT] (sorted within each group) => no runtime routing
-    expect_perm = torch.cat([torch.sort(lr.fp_indices).values,
-                             torch.sort(lr.int_indices).values])
-    c["static_permutation_fp_then_int"] = (
-        lr.perm.numel() == C and torch.equal(lr.perm, expect_perm)
-    )
+    # static permutation [FP, INT]; FP block first; valid permutation
+    expect = torch.cat([torch.sort(lr.fp_indices).values, lr.int_indices])
+    c["perm_fp_block_first"] = (lr.perm.numel() == C and torch.equal(lr.perm, expect))
     c["perm_is_permutation"] = sorted(lr.perm.tolist()) == list(range(C))
     c["mask_matches_fp"] = bool(lr.mask.sum().item() == k_fp)
-
+    # INT permutation only reorders INT channels (set preserved)
+    c["int_set_preserved"] = sorted(lr.int_indices.tolist()) == \
+        sorted(torch.nonzero(~lr.mask, as_tuple=False).squeeze(-1).tolist())
     # activation scales
-    a = lr.act_scales
-    c["act_scales_len"] = a.numel() == c_int
-    c["act_scales_positive_finite"] = bool((a > 0).all() and torch.isfinite(a).all())
-
-    # group layout
-    gsizes = group_sizes_for(c_int, lr.grms_group_size)
-    c["group_sizes_consistent"] = (
-        list(lr.grms_group_sizes) == gsizes and lr.grms_num_groups == len(gsizes)
-        and sum(gsizes) == c_int
-    )
-
-    # GroupRMS metadata when enabled
-    if lr.grms_enabled:
-        c["mu_g_len_eq_n_groups"] = torch.as_tensor(lr.mu_g).numel() == lr.grms_num_groups
-        c["mu_g_channels_len"] = (lr.mu_g_channels is not None
-                                  and lr.mu_g_channels.numel() == c_int)
-    else:
-        c["grms_disabled_ok"] = True  # routing-only: no GroupRMS metadata required
-
-    # Q-LOT-DC: when static diagonal compensation is enabled, alpha_c must exist
-    # and have length == k_int (packed-INT order); no runtime normalization.
-    if lr.diag_comp_applied:
-        c["diag_alpha_present"] = lr.diag_alpha is not None
-        c["diag_alpha_len_eq_k_int"] = (lr.diag_alpha is not None
-                                        and lr.diag_alpha.numel() == c_int)
-        c["diag_alpha_finite"] = (lr.diag_alpha is not None
-                                  and bool(torch.isfinite(lr.diag_alpha).all()))
-    else:
-        c["diag_comp_disabled_ok"] = True
-
-    # bias correction vectors (optional) must match output dim if present
-    if lr.bias_corr_gate is not None or lr.bias_corr_up is not None:
-        c["bias_corr_pair_present"] = (lr.bias_corr_gate is not None
-                                       and lr.bias_corr_up is not None)
-
-    # packable weights (optional, needs the model layer)
+    c["act_scales_len"] = lr.act_scales.numel() == c_int
+    c["act_scales_pos_finite"] = bool((lr.act_scales > 0).all() and torch.isfinite(lr.act_scales).all())
+    # W8-G128 group layout
+    gs = group_sizes_for(c_int, lr.w8_group_size)
+    c["group_layout_ok"] = sum(gs) == c_int
     if model_layer is not None:
         mlp = model_layer.mlp
-        ok_w = True
-        for p in ("gate_proj", "up_proj"):
-            W = getattr(mlp, p).weight
-            ok_w = ok_w and (W.shape[1] == C)  # in_features == LN2 hidden
-        c["weights_packable_in_features_eq_C"] = bool(ok_w)
-
-    ok = all(v for v in c.values())
-    return ok, c
+        c["weights_packable_in_features_eq_C"] = all(
+            getattr(mlp, p).weight.shape[1] == C for p in ("gate_proj", "up_proj"))
+    return all(c.values()), c
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--plan", default=None, help="path to a saved qlot_rms_routing.pt")
-    ap.add_argument("--config", default=None,
-                    help="if no --plan, calibrate with this config to produce a plan")
+    ap.add_argument("--plan", default=None, help="path to sadnd_cap_routing.pt")
+    ap.add_argument("--config", default=None, help="if no --plan, calibrate to produce one")
     ap.add_argument("--model", default="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
     ap.add_argument("--device", default="cpu")
-    ap.add_argument("--calib_synthetic", action="store_true",
-                    help="use synthetic calibration data (offline; readiness only)")
-    ap.add_argument("--out", default="results/custom_packed_readiness.json")
+    ap.add_argument("--calib_synthetic", action="store_true")
+    ap.add_argument("--out", default="results/sadnd_cap_readiness.json")
     args = ap.parse_args()
 
     model = None
@@ -122,9 +66,8 @@ def main():
         from qlot_rms.calibration import calibrate
         cfg = QLotRmsConfig.load_json(args.config)
         tok = AutoTokenizer.from_pretrained(args.model)
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model, torch_dtype=torch.float16).to(args.device).eval()
-        plan = calibrate(model, tok, cfg, device=args.device, routing_method="sadnd",
+        model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float16).to(args.device).eval()
+        plan = calibrate(model, tok, cfg, device=args.device,
                          allow_synthetic=args.calib_synthetic, batch_size=8)
     else:
         raise SystemExit("provide --plan or --config")
@@ -134,47 +77,29 @@ def main():
         from qlot_rms.model_integration import find_decoder_layers
         layers = find_decoder_layers(model)
 
-    per_layer = {}
-    all_ok = True
-    grms_enabled = 0
+    per_layer, all_ok = {}, True
     for i, lr in plan.layers.items():
-        ml = layers[i] if layers is not None else None
-        ok, checks = check_layer(lr, ml)
-        per_layer[int(i)] = {"ok": ok, "checks": checks,
-                             "grms_enabled": bool(lr.grms_enabled)}
+        ok, checks = check_layer(lr, layers[i] if layers is not None else None)
+        per_layer[int(i)] = {"ok": ok, "checks": checks}
         all_ok = all_ok and ok
-        grms_enabled += int(bool(lr.grms_enabled))
 
     try:
         from qlot_rms.projection import CustomPackedBackend
-        cp_available = bool(CustomPackedBackend.available())
-    except Exception:  # noqa: BLE001
-        cp_available = False
-    dc_layers = sum(int(bool(lr.diag_comp_applied)) for lr in plan.layers.values())
+        cp_avail = bool(CustomPackedBackend.available())
+    except Exception:
+        cp_avail = False
 
-    report = {
-        "ready": all_ok,
-        "num_layers": len(plan.layers),
-        "grms_enabled_layers": grms_enabled,
-        "diag_comp_layers": dc_layers,
-        "custom_packed_experimental": True,
-        "custom_packed_kernel_available": cp_available,
-        "backend_note": ("Artifacts validated for packing. custom_packed is "
-                         "EXPERIMENTAL: it runs only via packed_forward with a real "
-                         "Triton/CUDA kernel and never silently falls back. "
-                         "torch_reference remains the default. No speedup is implied "
-                         "by readiness."),
-        "per_layer": per_layer,
-    }
+    report = {"ready": all_ok, "num_layers": len(plan.layers),
+              "custom_packed_experimental": True, "custom_packed_kernel_available": cp_avail,
+              "backend_note": ("Artifacts validated for packing. custom_packed is a stub "
+                               "(no kernel). torch_reference is the default; no speedup implied."),
+              "per_layer": per_layer}
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-    with open(args.out, "w") as f:
-        json.dump(report, f, indent=2)
-    print(f"[readiness] ready={all_ok}  layers={len(plan.layers)}  "
-          f"grms_enabled={grms_enabled}  diag_comp={dc_layers}  "
-          f"custom_packed_experimental=True kernel_available={cp_available}")
+    json.dump(report, open(args.out, "w"), indent=2)
+    print(f"[readiness] ready={all_ok} layers={len(plan.layers)} "
+          f"custom_packed_experimental=True kernel_available={cp_avail}")
     if not all_ok:
-        bad = [i for i, v in per_layer.items() if not v["ok"]]
-        print(f"[readiness] FAILED layers: {bad}")
+        print("[readiness] FAILED:", [i for i, v in per_layer.items() if not v["ok"]])
     print(f"[readiness] wrote {args.out}")
     sys.exit(0 if all_ok else 1)
 

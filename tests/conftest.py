@@ -70,9 +70,13 @@ def small_config():
 
     return QLotRmsConfig(
         enable_qlot_rms=True,
+        method="sadnd_cap",
         qlot_scope="mlp_only",
+        routing_score="output_aware_sadnd",
+        fp_budget_mode="global",
+        int_permutation_mode="packing_aware",
         fp_ratio=0.06,
-        grms_group_size=16,        # small so the INT block forms several groups
+        w8_group_size=16,          # small so the INT block forms several groups
         calibration_samples=8,
         calibration_seq_len=16,
         num_calib_subsets=3,

@@ -45,39 +45,13 @@ from qlot_rms.model_integration import patch_model, unpatch_model
 
 
 VARIANTS = {
-    # name: (routing_method, overrides)
-    "fp16":                ("none",      {}),
-    "int8_ptq":            ("sadnd",     {"fp_ratio": 0.0, "use_grms": False, "use_mean_comp": False}),
-    "random":              ("random",    {"use_grms": False, "use_mean_comp": False}),
-    "magnitude":           ("magnitude", {"use_grms": False, "use_mean_comp": False}),
-    "sadnd":               ("sadnd",     {"use_grms": False, "use_mean_comp": False}),
-    "sadnd_grms":          ("sadnd",     {"use_grms": True,  "use_mean_comp": False}),
-    "sadnd_grms_meancomp": ("sadnd",     {"use_grms": True,  "use_mean_comp": True}),
-    # per-layer gated GroupRMS (enables GroupRMS only where the calibration proxy
-    # says it helps); falls back to routing-only on layers where it doesn't.
-    "sadnd_grms_gated":    ("sadnd",     {"use_grms": True,  "use_mean_comp": True,
-                                          "grms_gating": True}),
-    # --- Q-LOT-DC variants (Static Diagonal Compensation, no GroupRMS) ---
-    "qlot_dc_median":      ("sadnd",     {"use_static_diag_comp": True,
-                                          "diag_comp_mode": "median_scale"}),
-    "qlot_dc_smooth":      ("sadnd",     {"use_static_diag_comp": True,
-                                          "diag_comp_mode": "smoothquant_like"}),
-    "qlot_dc_error_bounded": ("sadnd",   {"use_static_diag_comp": True,
-                                          "diag_comp_mode": "median_scale",
-                                          "fp_budget_mode": "error_bounded"}),
-    "qlot_dc_biascorr":    ("sadnd",     {"use_static_diag_comp": True,
-                                          "diag_comp_mode": "median_scale",
-                                          "use_projection_bias_correction": True}),
-    # raw: run the base --config exactly as written (no normalization/overrides)
-    "config":              ("__raw__",   None),
-}
-
-# method-control flags reset to neutral before applying a variant's overrides, so
-# the base --config never leaks method behavior into a controlled variant.
-_NEUTRAL_FLAGS = {
-    "use_grms": False, "use_mean_comp": False, "grms_gating": False,
-    "use_static_diag_comp": False, "fp_budget_mode": "fixed",
-    "use_projection_bias_correction": False,
+    # name: (routing_score, overrides)   -- SADND-CAP variant matrix
+    "fp16":                ("none",                {}),
+    "int8_ptq":            ("sadnd",               {"fp_ratio": 0.0}),
+    "sadnd":               ("sadnd",               {}),
+    "output_aware_sadnd":  ("output_aware_sadnd",  {}),
+    # raw: run the base --config exactly as written (= the SADND-CAP config)
+    "config":              ("__raw__",             None),
 }
 
 
@@ -115,30 +89,27 @@ def wikitext2_ppl(model, tok, device, seq_len=2048, max_chunks=None,
 
 
 def base_cfg_dict(args):
-    """Base config dict: from --config JSON if given, else from CLI flags."""
+    """Base config dict: from --config JSON if given, else SADND-CAP defaults."""
     if getattr(args, "config", None):
         return QLotRmsConfig.load_json(args.config).to_dict()
-    return dict(
-        enable_qlot_rms=True, qlot_scope="mlp_only",
-        fp_ratio=args.fp_ratio, grms_group_size=args.grms_group_size,
-        lambda_agg=args.lambda_agg, p_proxy=args.p_proxy, p_act=args.p_act,
-        calibration_samples=args.calib_samples, calibration_seq_len=args.calib_seq_len,
-        num_calib_subsets=args.calib_subsets, subset_size=args.subset_size,
-        seed=args.seed, backend=args.backend, w8_group_size=args.w8_group_size,
-        routed_layers=args.routed_layers,
-    )
+    d = QLotRmsConfig(enable_qlot_rms=True, qlot_scope="mlp_only").to_dict()
+    for k in ("fp_ratio", "p_proxy", "p_act", "calib_samples", "calib_seq_len",
+              "calib_subsets", "subset_size", "seed", "backend", "w8_group_size",
+              "routed_layers"):
+        if hasattr(args, k):
+            key = {"calib_samples": "calibration_samples", "calib_seq_len": "calibration_seq_len",
+                   "calib_subsets": "num_calib_subsets"}.get(k, k)
+            d[key] = getattr(args, k)
+    return d
 
 
 def build_cfg(args, routing_method, overrides):
     base = base_cfg_dict(args)
-    # the feature path is always enabled+mlp_only for these experiments
     base["enable_qlot_rms"] = True
     base["qlot_scope"] = "mlp_only"
     if overrides is None:
-        # "config" raw variant: use the base --config exactly as written.
-        return QLotRmsConfig.from_dict(base).validate()
-    # controlled variant: neutralize method flags, then apply this variant's overrides
-    base.update(_NEUTRAL_FLAGS)
+        return QLotRmsConfig.from_dict(base).validate()      # "config" raw variant
+    base["routing_score"] = routing_method
     base.update(overrides)
     return QLotRmsConfig.from_dict(base).validate()
 
@@ -186,19 +157,11 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # resolve default variant set by method of the supplied --config
+    # default: compare the supplied --config (run as-is) against fp16 / int8_ptq /
+    # sadnd / output_aware_sadnd. sadnd inherits the config's fp_ratio -> an
+    # EQUAL-FP-BUDGET comparison.
     if args.variants is None:
-        base_method = base_cfg_dict(args).get("method", "qlot_rms")
-        if base_method == "qlot_dc_plus":
-            # the supplied --config IS the selected DC+ method; compare it (run
-            # as-is via the "config" variant) against fp16 / int8_ptq / sadnd.
-            args.variants = ["fp16", "int8_ptq", "sadnd", "config"]
-        elif base_method == "qlot_dc":
-            args.variants = ["fp16", "int8_ptq", "sadnd",
-                             "qlot_dc_median", "qlot_dc_error_bounded", "qlot_dc_biascorr"]
-        else:
-            args.variants = ["fp16", "int8_ptq", "random", "magnitude", "sadnd",
-                             "sadnd_grms", "sadnd_grms_meancomp", "sadnd_grms_gated"]
+        args.variants = ["fp16", "int8_ptq", "sadnd", "output_aware_sadnd", "config"]
 
     print(f"[eval] loading {args.model} on {args.device}")
     model, tok = load_model(args.model, args.device)
@@ -233,12 +196,10 @@ def main():
             rec = {
                 "variant": name, "ppl": ppl,
                 "fp_ratio": cfg.fp_ratio, "k_fp": ex.k_fp, "C": ex.num_channels,
-                "grms": cfg.use_grms, "mean_comp": cfg.use_mean_comp,
-                "diag_comp": cfg.use_static_diag_comp,
-                "diag_comp_mode": cfg.diag_comp_mode if cfg.use_static_diag_comp else None,
-                "fp_budget": cfg.fp_budget_mode,
+                "routing_score": cfg.routing_score,
+                "fp_budget_mode": cfg.fp_budget_mode,
+                "int_permutation_mode": cfg.int_permutation_mode,
                 "selected_fp_ratio": ex.selected_fp_ratio,
-                "bias_corr": cfg.use_projection_bias_correction,
                 "routed_layers": len(plan.layers),
             }
         rec["seconds"] = round(time.time() - t0, 1)
@@ -249,13 +210,9 @@ def main():
 
     meta = {
         "model": args.model, "backend": args.backend, "device": args.device,
-        "fp_ratio": args.fp_ratio, "grms_group_size": args.grms_group_size,
-        "seq_len": args.seq_len, "calib": {
-            "samples": args.calib_samples, "seq_len": args.calib_seq_len,
-            "subsets": args.calib_subsets, "subset_size": args.subset_size},
+        "fp_ratio": args.fp_ratio, "seq_len": args.seq_len,
         "note": ("PPL only. No speedup is reported: torch_reference is "
-                 "fake-quantized. Use benchmark.py for wall-clock, compared only "
-                 "within the same backend/ratio/shapes/layers."),
+                 "fake-quantized (correctness-only). SADND-CAP method."),
         "results": results,
     }
     json_path = os.path.join(args.out_dir, "ppl_results.json")

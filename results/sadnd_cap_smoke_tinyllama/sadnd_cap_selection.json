@@ -1,0 +1,102 @@
+{
+  "model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+  "seq_len": 1024,
+  "val_chunks": 16,
+  "accept_only_margin": 0.001,
+  "fp16_ppl": 8.364399909973145,
+  "int8_ptq_ppl": 8.376991271972656,
+  "per_fp": {
+    "0.06": {
+      "sadnd_ppl": 8.375436782836914,
+      "best_candidate": "oa_packing",
+      "best_ppl": 8.372454643249512,
+      "delta_vs_sadnd": -0.0029821395874023438,
+      "beats_sadnd_by_margin": true
+    },
+    "0.20": {
+      "sadnd_ppl": 8.374938011169434,
+      "best_candidate": "oa_global_packing",
+      "best_ppl": 8.369919776916504,
+      "delta_vs_sadnd": -0.0050182342529296875,
+      "beats_sadnd_by_margin": true
+    }
+  },
+  "winner": "oa_global_packing",
+  "winner_fp": 0.2,
+  "winner_ppl": 8.369919776916504,
+  "clear_improvement": true,
+  "note": "Equal-FP-budget selection: accept only if it beats SADND@same-fp by margin, else fall back to best SADND. PPL only; no speedup.",
+  "results": [
+    {
+      "variant": "fp16",
+      "fp_ratio": null,
+      "ppl": 8.364399909973145
+    },
+    {
+      "variant": "int8_ptq",
+      "fp_ratio": 0.0,
+      "ppl": 8.376991271972656,
+      "seconds": 62.0
+    },
+    {
+      "variant": "sadnd",
+      "fp_ratio": 0.06,
+      "ppl": 8.375436782836914,
+      "seconds": 59.6
+    },
+    {
+      "variant": "output_aware",
+      "fp_ratio": 0.06,
+      "ppl": 8.374377250671387,
+      "seconds": 53.9
+    },
+    {
+      "variant": "packing_aware",
+      "fp_ratio": 0.06,
+      "ppl": 8.373705863952637,
+      "seconds": 57.7
+    },
+    {
+      "variant": "oa_packing",
+      "fp_ratio": 0.06,
+      "ppl": 8.372454643249512,
+      "seconds": 61.6
+    },
+    {
+      "variant": "oa_global_packing",
+      "fp_ratio": 0.06,
+      "ppl": 8.374618530273438,
+      "seconds": 56.1
+    },
+    {
+      "variant": "sadnd",
+      "fp_ratio": 0.2,
+      "ppl": 8.374938011169434,
+      "seconds": 56.3
+    },
+    {
+      "variant": "output_aware",
+      "fp_ratio": 0.2,
+      "ppl": 8.37357234954834,
+      "seconds": 57.3
+    },
+    {
+      "variant": "packing_aware",
+      "fp_ratio": 0.2,
+      "ppl": 8.371788024902344,
+      "seconds": 57.7
+    },
+    {
+      "variant": "oa_packing",
+      "fp_ratio": 0.2,
+      "ppl": 8.372374534606934,
+      "seconds": 56.9
+    },
+    {
+      "variant": "oa_global_packing",
+      "fp_ratio": 0.2,
+      "ppl": 8.369919776916504,
+      "seconds": 56.9
+    }
+  ]
+}

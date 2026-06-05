@@ -1,0 +1,30 @@
+{
+  "enable_qlot_rms": true,
+  "method": "sadnd_cap",
+  "qlot_scope": "mlp_only",
+  "routing_score": "output_aware_sadnd",
+  "fp_budget_mode": "fixed",
+  "same_global_fp_budget": true,
+  "int_permutation_mode": "packing_aware",
+  "accept_only_margin": 0.001,
+  "fp_ratio": 0.2,
+  "fp_ratio_candidates": [
+    0.0,
+    0.04,
+    0.06,
+    0.1,
+    0.2
+  ],
+  "calibration_samples": 128,
+  "calibration_seq_len": 512,
+  "num_calib_subsets": 5,
+  "subset_size": 32,
+  "p_proxy": 0.9995,
+  "p_act": 0.999,
+  "qmax": 127,
+  "w8_group_size": 128,
+  "backend": "torch_reference",
+  "cache_dequant_weight": true,
+  "seed": 0,
+  "dataset": "wikitext2"
+}
