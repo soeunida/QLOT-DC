@@ -1,0 +1,6 @@
+seed,clean_sadnd,cap_plus,cap_gt,delta_gt_vs_sadnd,delta_gt_vs_capplus
+0,6.585,6.5834,6.5815,-0.0035,-0.0018
+1,6.585,6.5829,6.5817,-0.0033,-0.0012
+2,6.5845,6.5827,6.5826,-0.002,-0.0002
+AGG_gt_vs_sadnd,,,,mean=-0.00293 std=0.00069 clear=3/3 robust=True,
+AGG_gt_vs_capplus,,,,,mean=-0.00108 std=0.00068 clear=2/3 robust=True

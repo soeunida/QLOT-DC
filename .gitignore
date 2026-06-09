@@ -1,17 +1,31 @@
+# Python
 __pycache__/
 *.pyc
 .pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# caches / runs / model weights
 cache/
 hf_cache/
 .cache/
 checkpoints/
 runs/
 wandb/
-eval/_sanity_out/
 artifacts/
+eval/_sanity_out/
 *.pt
 *.pth
 *.bin
 *.safetensors
 *.ckpt
 *.log
+
+# heavy results & logs: keep only small summaries / README under results/
+results/**
+!results/**/
+!results/**/README.md
+!results/**/*summary*.csv
+!results/**/gt_multiseed_summary.csv
+!results/**/multiseed_results.json

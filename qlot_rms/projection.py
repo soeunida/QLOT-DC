@@ -151,7 +151,10 @@ class PackedProjection(nn.Module):
             self.W_I_dq = None
 
     @classmethod
-    def from_linear(cls, linear, routing, gamma, beta, cfg, backend=None):
+    def from_linear(cls, linear, routing, gamma, beta, cfg, backend=None, int_gain=None):
+        """``int_gain`` (optional, [C-K_F] in packed INT order) is a static
+        SADND-CAP-GT output gain folded into the INT weight columns:
+        ``z = z_FP + (yq) @ (W_I * int_gain)^T``. None => unchanged."""
         if backend is None:
             backend = get_backend(cfg.backend)
         W = linear.weight.data
@@ -161,6 +164,9 @@ class PackedProjection(nn.Module):
         intc = routing.int_indices.to(dev)
         W_F = W[:, fp].contiguous().to(torch.float16)
         W_I = W[:, intc].contiguous().to(torch.float16)
+        if int_gain is not None and W_I.numel() > 0:
+            gain_vec = int_gain.to(dev).float().reshape(1, -1)   # per-INT-channel gain
+            W_I = (W_I.float() * gain_vec).contiguous().to(torch.float16)
         g = gamma.detach().float()
         gamma_F = g.index_select(0, fp)
         gamma_I = g.index_select(0, intc)

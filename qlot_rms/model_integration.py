@@ -112,8 +112,13 @@ def build_qlot_ffn(layer, routing, cfg, backend=None):
         raise ValueError("mlp lacks gate_proj/up_proj/down_proj; unsupported.")
     gamma = norm.weight
     beta = getattr(norm, "bias", None)
-    packed_gate = PackedProjection.from_linear(mlp.gate_proj, routing, gamma, beta, cfg, backend)
-    packed_up = PackedProjection.from_linear(mlp.up_proj, routing, gamma, beta, cfg, backend)
+    # SADND-CAP-GT: fold static INT output gains into the INT weight columns (if any)
+    gain_g = getattr(routing, "gt_int_gain_gate", None)
+    gain_u = getattr(routing, "gt_int_gain_up", None)
+    packed_gate = PackedProjection.from_linear(mlp.gate_proj, routing, gamma, beta, cfg,
+                                               backend, int_gain=gain_g)
+    packed_up = PackedProjection.from_linear(mlp.up_proj, routing, gamma, beta, cfg,
+                                             backend, int_gain=gain_u)
     return QLotRmsFFN(norm, packed_gate, packed_up, mlp.down_proj,
                       getattr(mlp, "act_fn"), routing, cfg)
 

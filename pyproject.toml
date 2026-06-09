@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "staticscale"
+version = "0.1.0"
+description = "Calibration-time FP/INT routing and static INT scale tuning for Transformer inference"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "torch",
+  "transformers",
+  "datasets",
+  "numpy",
+  "tqdm",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["staticscale*"]

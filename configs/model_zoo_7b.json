@@ -1,0 +1,9 @@
+{
+  "_comment": "Candidate 7B models for StaticScale evaluation. Availability checked locally (no download).",
+  "models": [
+    "Qwen/Qwen2.5-7B",
+    "meta-llama/Llama-2-7b-hf",
+    "mistralai/Mistral-7B-v0.1",
+    "Qwen/Qwen2.5-7B-Instruct"
+  ]
+}

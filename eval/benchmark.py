@@ -1,34 +1,42 @@
-"""Optional throughput + memory benchmark for Q-LOT-RMS.
+"""StaticScale packed FP/INT prototype — latency / memory diagnostics.
+
+This benchmarks the **packed FP/INT prototype** (the static tuned packed layout)
+for prefill latency and peak memory. It is a diagnostic tool only.
+
+  * For *quality* evaluation use the StaticScale entrypoints instead:
+        eval/run_staticscale_select.py     (equal-budget candidate selection)
+        eval/run_staticscale_smoke.py      (quick end-to-end smoke)
+        eval/run_staticscale_multiseed.py  (multi-seed robustness)
+        eval/run_7b_matrix.py              (fp-ratio matrix over a model zoo)
 
 IMPORTANT honesty constraints (enforced by this script's output):
-  * The default ``torch_reference`` backend is FAKE-QUANTIZED: it dequantizes
-    and runs FP matmuls.  It is a CORRECTNESS reference, not a fast path.  Any
-    "throughput" measured for it reflects the reference overhead, NOT a real
-    INT8 speedup.  This script therefore labels every timing with its
-    ``timing_backend`` and refuses to compute a speedup ratio for the reference
-    backend.
-  * A real speedup may only be claimed when measured with a custom packed kernel
-    backend, against the FP16 baseline, with the SAME fp_ratio, branch shapes,
-    routed layers, and kernel path.  Until ``custom_packed`` is implemented this
-    script reports raw wall-clock + peak memory only, with a clear caveat.
+  * The default ``torch_reference`` backend is FAKE-QUANTIZED: it dequantizes and
+    runs FP matmuls. It is a CORRECTNESS reference, not a fast path. Any timing for
+    it is a PROTOTYPE DIAGNOSTIC ONLY and reflects reference overhead, NOT an INT8
+    speedup. Every timing is labelled with its ``timing_backend`` and no speedup
+    ratio is computed for the reference backend.
+  * No backend-independent speedup is claimed. A real speedup could only be measured
+    with a custom packed kernel backend vs the FP16 baseline at the SAME fp_ratio,
+    branch shapes, routed layers, and kernel path. Until ``custom_packed`` is
+    implemented this script reports raw wall-clock + peak memory only, with a caveat.
+
+Variants (`--variants`): ``fp16`` (baseline), ``int8_ptq`` (fp_ratio=0), ``sadnd``
+(SADND routing), ``config`` (the full StaticScale policy from ``--config``, e.g.
+CAP+ budget + static clip-gain tuning).
 
 Measures (configurable batch / seq_len; default batch=1, seq_len=1024):
   * average prefill latency (single forward over the full sequence)
   * tokens/sec (batch * seq_len / latency)
   * peak CUDA memory (if CUDA)
 
-Profiling (optional, --profile):
-  * CUDA-synchronized timing, optional torch.profiler table saved to
-    profile_summary.txt.
+Profiling (optional, --profile): CUDA-synchronized timing + optional torch.profiler
+table saved to profile_summary.txt.
 
 Examples
 --------
-    python -m eval.benchmark --config configs/qlot_rms_full.json \
-        --out_dir results/qlot_rms_perf/after --batch_size 1 --seq_len 1024 \
-        --variants fp16 int8_ptq sadnd sadnd_grms_meancomp
-    python -m eval.benchmark --config configs/qlot_rms_full.json \
-        --out_dir results/qlot_rms_perf/prof --profile --profile_steps 8 \
-        --variants fp16 sadnd_grms_meancomp
+    python -m eval.benchmark --config configs/staticscale_qwen25_7b_fp020.json \
+        --out_dir results/staticscale_perf/after --batch_size 1 --seq_len 1024 \
+        --variants fp16 int8_ptq sadnd config
 """
 
 import argparse
@@ -40,8 +48,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import torch
 
-from qlot_rms.calibration import calibrate
-from qlot_rms.model_integration import patch_model, unpatch_model
+from staticscale import calibrate, patch_model, unpatch_model
 from eval.eval_perplexity import VARIANTS, build_cfg, base_cfg_dict, load_model  # reuse
 
 
@@ -110,14 +117,12 @@ def profile_prefill(model, device, seq_len, vocab, batch, steps, out_path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None,
-                    help="QLotRmsConfig JSON; supplies qlot hyper-params.")
+                    help="StaticScale config JSON (supplies the policy hyper-params).")
     ap.add_argument("--model", default="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--batch_size", type=int, default=1)
     ap.add_argument("--seq_len", type=int, default=1024)
     ap.add_argument("--fp_ratio", type=float, default=0.06)
-    ap.add_argument("--grms_group_size", type=int, default=128)
-    ap.add_argument("--lambda_agg", type=float, default=1.0)
     ap.add_argument("--p_proxy", type=float, default=0.9995)
     ap.add_argument("--p_act", type=float, default=0.999)
     ap.add_argument("--w8_group_size", type=int, default=128)
@@ -143,7 +148,7 @@ def main():
 
     # custom_packed is experimental: fail clearly up-front, never fake results.
     if args.backend == "custom_packed":
-        from qlot_rms.projection import CustomPackedBackend
+        from staticscale.projection import CustomPackedBackend
         if not CustomPackedBackend.available():
             print("[bench] ERROR: backend='custom_packed' is experimental and no "
                   "working Triton/CUDA kernel is available. Refusing to fake "

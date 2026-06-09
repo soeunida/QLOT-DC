@@ -1,0 +1,41 @@
+{
+  "_comment": "StaticScale diagnostics over FP ratios; computes the 5 diagnostic CSVs.",
+  "model": "Qwen/Qwen2.5-7B",
+  "no_download": true,
+  "fp_ratios": [
+    0.03,
+    0.06,
+    0.1,
+    0.2
+  ],
+  "calib_chunks": 128,
+  "calib_seq_len": 512,
+  "sel_chunks": 32,
+  "sel_seq_len": 512,
+  "eval_chunks": 64,
+  "eval_seq_len": 2048,
+  "gt_max_tokens": 256,
+  "p_act": 0.999,
+  "p_proxy": 0.9995,
+  "qmax": 127,
+  "w8_group_size": 128,
+  "gt_clip_candidates": [
+    0.75,
+    1.0,
+    1.25,
+    1.5,
+    2.0
+  ],
+  "gt_group_size": 128,
+  "gt_clip_granularity": "group",
+  "gt_gain_granularity": "layer",
+  "fp_refine_margin": 0.0005,
+  "fp_refine_candidate_pool": 32,
+  "fp_refine_max_swaps_per_layer": 8,
+  "n_layers_sampled": 12,
+  "selection_split": "D_sel",
+  "eval_split": "D_eval",
+  "enable_qlot_rms": true,
+  "method": "sadnd_cap",
+  "qlot_scope": "mlp_only"
+}

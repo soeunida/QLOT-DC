@@ -1,114 +1,91 @@
 # Results summary
 
 All numbers are measured in this repository with the `torch_reference` backend
-(fake-quantized, **correctness-only**). **No speedup is claimed.** Selection uses
-a small validation split; full WikiText-2 test is evaluated once.
+(fake-quantized, **correctness-only**). **No backend-independent speedup is claimed.**
+Selection uses a small validation split; multi-seed checks use a held set of seeds.
+Packed-layout throughput, where mentioned, is **prototype diagnostic evidence only**.
 
-## Final supported method: SADND-CAP
+StaticScale is the final method; SADND routing, the cascade/marginal FP budget (CAP+),
+equal-budget FP mask refinement, and static groupwise clip-gain tuning are its internal
+components.
 
-SADND-CAP = output-aware SADND routing + global layer-wise FP budget allocation +
-packing-aware INT permutation + equal-budget accept-only selection. It keeps only
-the routing/packing choices that are safe under the equal-budget rule (a choice
-is kept only if it beats SADND at the *same* FP budget by margin).
+## Primary result: static clip-scale tuning is the dominant driver (Qwen2.5-7B)
 
-Run the equal-budget selection (`eval/select_sadnd_cap.py`) and the full test
-(`eval/eval_perplexity.py`) per the README. Outputs are written under
-`results/sadnd_cap_*`.
+WikiText-2, seq_len=2048, 64 chunks, fp_ratio=0.20, seeds 0/1/2 (fp16 = 6.5811). Decision
+rule: ≥2/3 seeds clear −0.001 PPL **and** mean Δ < −0.001.
 
-### Multi-seed equal-budget robustness (Qwen2.5-7B, fp_ratio=0.06)
-
-A single full-test run (145 chunks, calib 128) showed SADND-CAP at 6.8019 vs
-clean SADND 6.8031 — Δ = −0.0013, barely clearing the 0.001 margin. To test
-whether that is real or noise, we ran a multi-seed equal-budget check (seeds
-0/1/2; screen at max_chunks=64, calib 64; same fp_ratio=0.06; SADND-CAP =
-output-aware + global budget + packing-aware vs clean SADND = fixed + original):
-
-| seed | SADND | output-aware | SADND-CAP | Δ (CAP − SADND) | clears −0.001? |
+| seed | clean SADND | CAP+ (cascade+marginal) | StaticScale | Δ SS−SADND | Δ SS−CAP+ |
 |---|---|---|---|---|---|
-| 0 | 6.5863 | 6.5854 | 6.5854 | −0.0009 | no |
-| 1 | 6.5860 | 6.5862 | 6.5856 | −0.0004 | no |
-| 2 | 6.5855 | 6.5857 | 6.5849 | −0.0006 | no |
+| 0 | 6.5850 | 6.5834 | 6.5815 | −0.0035 | −0.0018 |
+| 1 | 6.5850 | 6.5829 | 6.5817 | −0.0033 | −0.0012 |
+| 2 | 6.5845 | 6.5827 | 6.5826 | −0.0020 | −0.0002 |
 
-Aggregate: **mean Δ = −0.0006, std Δ = 0.0002, margin-clearing seeds = 0/3,
-`robust_better = False`.**
-
-**Interpretation (honest):**
-- SADND-CAP is **consistently slightly better** than clean SADND at equal FP
-  budget (Δ negative on all 3 seeds), but the gain is **below the predefined
-  0.001 margin** and within the calibration/seed noise floor.
-- The single-run full-test improvement of −0.0013 was **likely at the favorable
-  end of seed/calibration noise**; the multi-seed mean (−0.0006) is the honest
-  estimate.
-- **No robust improvement is claimed.** SADND-CAP is best described as a
-  **policy/layout framework with a weak positive trend**, not a decisive quality
-  win, in this INT8-near-lossless regime.
-- output-aware routing alone is neutral (Δ vs SADND mixed sign across seeds); the
-  small trend comes from the global budget + packing-aware layout, not routing.
-- No speedup claim; `torch_reference` is correctness-only.
-
-Data: `results/sadnd_cap_multiseed_qwen25_7b/multiseed_results.json` and the
-single full-test run in `results/sadnd_cap_full_qwen25_7b/`.
-
-### Multi-seed equal-budget robustness — SADND-CAP+ (Qwen2.5-7B, fp_ratio=0.20)
-
-SADND-CAP+ adds cascade-aware FP budget allocation + marginal-gain FP allocation
-on top of SADND-CAP (see `docs/method.md`). We ran a multi-seed equal-budget
-check on Qwen2.5-7B (WikiText-2 validation, seq_len=2048, 64 chunks, fp_ratio=0.20,
-seeds 0/1/2) comparing clean SADND (fixed + original) vs SADND-CAP
-(global+packing) vs SADND-CAP+ (cascade+marginal), all at the **same** FP budget:
-
-| seed | clean SADND | SADND-CAP (global+packing) | Δ | SADND-CAP+ (cascade+marginal) | Δ |
-|---|---|---|---|---|---|
-| 0 | 6.5850 | 6.5833 | −0.0017 | 6.5834 | −0.0017 |
-| 1 | 6.5850 | 6.5845 | −0.0005 | 6.5829 | −0.0021 |
-| 2 | 6.5845 | 6.5829 | −0.0016 | 6.5827 | −0.0018 |
-
-Aggregate (Δ = candidate − clean SADND; decision rule: ≥2/3 seeds clear −0.001
-**and** mean Δ < −0.001):
-
-| variant | mean Δ | std Δ | seeds clearing −0.001 | `robust_better` |
+| comparison | mean Δ | std Δ | seeds clearing | robust |
 |---|---|---|---|---|
-| **SADND-CAP+ (cascade+marginal)** | **−0.00185** | 0.00019 | **3/3** | **True** |
-| SADND-CAP (global+packing) | −0.00129 | — | 2/3 | True |
+| StaticScale vs clean SADND | −0.00293 | 0.00069 | 3/3 | True |
+| StaticScale vs CAP+ | −0.00108 | 0.00068 | 2/3 | borderline |
 
 **Interpretation (honest):**
-- This is the **first method in this project to satisfy the multi-seed
-  equal-budget robustness criterion** (SADND-CAP+: 3/3 seeds clear the margin,
-  mean Δ = −0.00185, low spread std 0.00019).
-- The improvement is **small but consistent** — ~0.0018 PPL on a 6.58 baseline
-  (~0.03%), inside the INT8-near-lossless regime. **This is not a large quality
-  win.**
-- The result **supports cascade-aware + marginal-gain FP budget allocation as a
-  useful extension** over clean SADND, under the equal-budget accept-only rule.
-- The claim is **budget-dependent**: robustness is shown at **fp_ratio=0.20**, and
-  is **not yet shown at fp_ratio=0.06** (where the earlier base SADND-CAP
-  multi-seed gave mean Δ = −0.0006, 0/3 clearing — see the section above).
-- **No speedup is claimed**; `torch_reference` is correctness-only.
+- **Clip-scale tuning is the dominant driver.** Static groupwise clip tuning carries the
+  improvement; the structural stages (routing, budget, mask refinement) are supporting
+  mechanisms that keep clip tuning stable under a fixed FP budget.
+- The gain over the budget-only CAP+ baseline is **small and borderline** (mean −0.00108,
+  2/3 clearing, seed 2 ≈ tie). We do **not** claim a strong full-pipeline improvement.
+- **`CAP+ + clip` is already close to full StaticScale**; adding equal-budget mask
+  refinement or joint mask-scale search adds no measurable gain (see the joint-search and
+  ablation notes below and `docs/negative_findings.md`).
+- `tau` mean ≈ 1.24–1.25; **output gain `eta ≈ 1.0` contributes little**; **group-wise
+  `eta` is experimental and rejected by accept-only**.
+- The effect is **small and budget-dependent** (~0.003 PPL, ~0.04%). **No speedup is
+  claimed.**
 
-Data: `results/sadnd_cap_cascade_multiseed_qwen25_7b/multiseed_results.json`.
+> **Table note (component attribution / Table 9).** Static clip-scale tuning is the
+> dominant driver of StaticScale's equal-budget improvement; `CAP+ + clip` is close to
+> the full pipeline. **Joint mask-scale search did not improve over the additive full
+> pipeline in the fp0.20 diagnostic** (proxy gate failed; see `docs/negative_findings.md`).
 
-## Prior correction attempts — negative findings (removed from active code)
+Data: `results/sadnd_cap_gt_multiseed_qwen25_7b/multiseed_results.json` and
+`.../staticscale_summary.csv`.
 
-Three correction methods were implemented and evaluated, then removed (git tag
-`backup-before-final-sadnd-cap-cleanup`):
+## Single-seed equal-budget selection (Qwen2.5-7B, 64 chunks)
 
-- **Q-LOT-DC** (static diagonal compensation) and **Q-LOT-DC+** (output-aware +
-  adaptive FP + projection bias / low-rank): on TinyLlama-1.1B and Qwen2.5-7B,
-  **did not robustly beat SADND at equal FP budget** (differences within ~1e-3,
-  i.e. noise; any gain over INT8 PTQ tracked the FP budget, which SADND captures
-  equally).
-- **Q-LOT-OBC** (block-output bias/affine/low-rank correction): block-bias looked
-  better on small validation but the advantage **did not generalize** to the full
-  test (Qwen2.5-7B: DC+OBC 6.8014 vs SADND 6.8008 at equal fp=0.10 — slightly
-  worse; margin not cleared). Block **low-rank** correction badly **overfit**
-  (validation PPL 8.82 → 10–12) and was caught by a validation-PPL gate.
+fp16 6.5811, INT8 PTQ 6.5877. StaticScale (clip-gain) clears both margins at both
+budgets:
 
-**Conclusion:** in the INT8-near-lossless regime tested (FP16→INT8 PTQ is only a
-few ×1e-3 PPL), static *output corrections* do not provide a robust equal-budget
-quality gain over SADND. SADND-CAP therefore retains routing + packing (which are
-budget/layout choices, gated by equal-budget accept-only) and drops the
-corrections. A decisive test of corrections would require a regime where INT8
-materially degrades (e.g. W4 / lower-bit), which is out of scope here.
+| fp | clean SADND | CAP+ | StaticScale | Δ vs SADND | Δ vs CAP+ |
+|---|---|---|---|---|---|
+| 0.06 | 6.5862 | 6.5855 | 6.5824 | −0.0038 | −0.0031 |
+| 0.20 | 6.5850 | 6.5830 | 6.5818 | −0.0032 | −0.0012 |
 
-No speedup is claimed; `torch_reference` is correctness-only; a real
-`custom_packed` kernel is not implemented.
+The clip-gain projection-MSE proxy is cut ~2× on all 28 layers (e.g. 2.0e-4 → 1.1e-4 at
+fp=0.20). Data: `results/sadnd_cap_gt_qwen25_7b/` (selection + `groupwise_clip_gain_summary.json`).
+
+## Component-level multi-seed history (Qwen2.5-7B, 64 chunks)
+
+- **FP budget (CAP+).** At fp=0.06 the cascade/marginal budget is a weak sub-margin trend
+  over clean SADND (mean Δ ≈ −0.0006, 0/3 clearing). At fp=0.20 it robustly beats clean
+  SADND (mean Δ = −0.00185, std 0.00019, 3/3 clearing) — the first component to clear the
+  criterion versus clean SADND. Data: `results/sadnd_cap_cascade_multiseed_qwen25_7b/`.
+- **Equal-budget FP mask refinement.** On the near-lossless models tested it makes very
+  few swaps (0–1 per layer) and is essentially quality-neutral versus CAP+ at equal
+  budget — it never regresses (accept-only) but the routing score is already near-optimal
+  at the boundary here. Retained as a safe static refinement. Data:
+  `results/sadnd_cap_refine_tinyllama/`, `results/sadnd_cap_gt_qwen25_7b/`.
+- **Static groupwise clip-gain tuning.** The dominant component (see primary result). Layer-wise
+  gain accepted on all 28 layers; group-wise gain experimental and rejected.
+
+## TinyLlama-1.1B smoke (1024 seq, 32 chunks, single seed)
+
+fp16 8.8232. StaticScale (clip-gain) at fp=0.20 = 8.8241 vs clean SADND 8.8308
+(Δ −0.0067) and CAP+ 8.8274 (Δ −0.0033). Consistent with the Qwen finding: clip-driven,
+`tau ≈ 1.24`, `eta ≈ 1.0`, group-gain rejected. Data: `results/sadnd_cap_gt_tinyllama/`.
+
+## Regime note
+
+In the INT8-near-lossless regime tested (FP16→INT8 PTQ is only a few ×1e-3 PPL), all
+equal-budget effects are small. The removed static-correction methods did not robustly
+beat SADND at equal budget; see `docs/negative_findings.md`. A decisive test would need a
+regime where INT8 materially degrades (e.g. lower-bit), which is out of scope here.
+
+No backend-independent speedup is claimed; `torch_reference` is correctness-only; a real
+packed FP16+INT8 kernel is not implemented.

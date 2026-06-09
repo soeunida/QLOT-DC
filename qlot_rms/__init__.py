@@ -1,8 +1,15 @@
-"""SADND-CAP: Calibration-time Adaptive FP/INT Routing and Packing for Low-Bit
-LLM Inference.
+"""qlot_rms — LEGACY / INTERNAL implementation package for StaticScale.
 
-The single active method. It routes the Pre-LN ``LN2 -> FFN`` interface to a
-static FP16 / INT8(W8-G128) layout using:
+.. deprecated::
+   ``qlot_rms`` is the internal implementation of **StaticScale** and is kept only
+   for backward compatibility. New code should import from the public
+   :mod:`staticscale` package (e.g. ``from staticscale import StaticScaleConfig,
+   calibrate, patch_model``). The public StaticScale modules re-export the symbols
+   defined here under stable names. This package may be removed in a future release.
+
+SADND-CAP / SADND-CAP-GT (legacy names): calibration-time adaptive FP/INT routing,
+budget, mask refinement, and static groupwise clip-gain tuning. It routes the
+Pre-LN ``LN2 -> FFN`` interface to a static FP16 / INT8(W8-G128) layout using:
   1. output-aware SADND routing
   2. global layer-wise FP budget allocation
   3. packing-aware INT permutation

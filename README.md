@@ -1,149 +1,145 @@
-# SADND-CAP: Calibration-Time Adaptive FP/INT Routing and Packing for Low-Bit LLM Inference
+# StaticScale
 
-SADND-CAP is a calibration-time method that lays out the Pre-LN `LN2 → FFN`
-interface of a transformer as a **static FP16 / INT8 (W8-G128)** mixture. It is
-the single active method in this repository; earlier correction attempts
-(Q-LOT-DC, Q-LOT-DC+, Q-LOT-OBC, GroupRMS, diagonal/bias/low-rank/block
-corrections) were evaluated, did **not** robustly beat SADND at equal FP budget,
-and have been removed from the active code (recoverable via git tag
-`backup-before-final-sadnd-cap-cleanup`).
+**Calibration-Time FP/INT Routing and Static INT Scale Tuning for Transformer Inference**
 
-> The default backend (`torch_reference`) is fake-quantized and **correctness-only**.
-> **No speedup is claimed**; a real custom kernel is not implemented.
+StaticScale is a **training-free, calibration-time static policy search** for INT8
+Transformer FFN inference. It keeps the FP budget fixed, improves *where* FP
+protection is assigned, and tunes the remaining INT branch with **static** group-wise
+scale multipliers. Every decision is frozen before serving — inference does **no**
+runtime top-k / sort / search / activation normalization.
 
-## 1. What is SADND-CAP?
+> The current implementation is a **correctness/reference backend** (`torch_reference`:
+> fake-quantized, FP matmul). **No backend-independent speedup is claimed.** Any
+> throughput numbers from the packed FP/INT prototype are **prototype diagnostics only**.
 
-For each routed MLP layer, SADND-CAP decides — once, at calibration time —
-which input channels stay FP16 and which become INT8, how the FP budget is
-shared across layers, and how INT channels are ordered for W8-G128 packing.
-Everything is frozen; inference does **no** runtime top-k / sort / dynamic
-routing.
+## Components
 
-## 2. Method overview
+1. **Output-aware SADND routing** — score each input channel by relative INT8 proxy
+   distortion weighted by its gate/up weight-column norms; protect the
+   highest-scoring channels in FP16, quantize the rest to INT8 (W8-G128).
+2. **Cascade-aware & marginal-gain FP budget allocation** — distribute one fixed
+   global FP budget across layers by local sensitivity plus accumulated
+   residual-stream (cascade) error, or greedily by per-channel marginal gain.
+3. **Equal-budget FP mask refinement** — keep each layer's FP count fixed and refine
+   *which* channels are FP via greedy boundary swaps, accepted only if a measured
+   MLP-output proxy improves.
+4. **Static groupwise clip-gain tuning** — tune a per-INT-group activation clip
+   multiplier `tau_g` (folds into the frozen activation scales) and a layer/group INT
+   output gain `eta` (folds into the INT weight columns). Static metadata only.
+5. **Packing-aware static FP/INT layout** — order INT channels so each contiguous
+   W8-G128 group has a uniform activation scale; the FP block stays first.
 
-1. **Output-aware SADND routing** — score channels by quantization sensitivity.
-2. **Global layer-wise FP budget allocation** — share one FP budget across layers.
-3. **Packing-aware INT permutation** — order INT channels for uniform W8-G128 groups.
-4. **Equal-budget accept-only selection** — keep a choice only if it beats SADND
-   at the *same* FP budget.
+All components are gated by an **equal-budget accept-only** rule: a choice is kept
+only if it beats the baseline at the *same* FP budget by a margin; otherwise it
+falls back. No method is credited for spending more FP.
 
-## 3. Output-aware SADND routing
+## Contribution (what actually drives the result)
 
-`score_c = δ_c · (||W_gate[:,c]||₂ + ||W_up[:,c]||₂)` where `δ_c` is the relative
-INT8 proxy distortion of channel `c` (`E[(u−û)²]/E[u²]`, aggregated mean+std over
-calibration subsets) and the weight column norms (nn.Linear `[out,in]`) capture
-how heavily the channel is used. The `fp_ratio·C` highest-score channels go to
-FP16; the rest to INT8. `routing_score ∈ {sadnd, output_aware_sadnd, magnitude}`.
+The **primary contribution is static groupwise clip-scale tuning** of the INT branch.
+Output-aware SADND routing, cascade/marginal FP budget allocation (CAP+), and
+equal-budget FP mask refinement are **supporting mechanisms** that keep the clip tuning
+stable under a fixed FP budget. In the regime tested, the structural stages give
+**diminishing returns** once clip tuning is applied, and **joint mask-scale optimization
+did not improve over the additive pipeline** (a negative finding; see
+`docs/negative_findings.md`).
 
-## 4. Global layer-wise FP budget allocation
+## Main result
 
-With `fp_budget_mode="global"`, the total FP budget `⌊fp_ratio · Σ_l C_l⌋` is
-allocated by globally ranking all (layer, channel) pairs by score: a layer with
-more high-distortion channels receives more FP capacity, while the **total**
-budget is preserved (`same_global_fp_budget`). `"fixed"` uses `fp_ratio` per layer.
+**Qwen2.5-7B, WikiText-2, seq_len=2048, 64 chunks, fp_ratio=0.20, seeds 0/1/2**
+(equal-budget multi-seed check; robust iff ≥2/3 seeds clear −0.001 PPL **and** mean
+Δ < −0.001):
 
-## 5. Packing-aware INT permutation
+| comparison | mean ΔPPL | std | seeds clearing | robust |
+|---|---|---|---|---|
+| StaticScale vs clean SADND | −0.00293 | 0.00069 | 3/3 | True |
+| StaticScale vs CAP+ (cascade+marginal budget) | −0.00108 | 0.00068 | 2/3 | borderline |
 
-INT channels are reordered so that each contiguous W8-G128 group has a more
-uniform per-channel activation scale, reducing within-group quantization error.
-Modes: `original`, `scale_sorted`, `scale_clustered`, `packing_aware` (default).
-Only INT channels are reordered; the FP block stays first; no inverse permutation
-is needed at inference.
+- The gain is **small and clip-driven** (clip multiplier `tau ≈ 1.24–1.25`); the output
+  gain `eta ≈ 1.0` contributes little, and group-wise `eta` is experimental (rejected by
+  accept-only).
+- **`CAP+ + clip` is already close to the full pipeline.** Adding equal-budget mask
+  refinement or joint mask-scale search yields **no further measurable gain** at
+  fp_ratio=0.20 (proxy diagnostics; see `docs/negative_findings.md`). We therefore do
+  **not** claim a strong full-pipeline improvement over `CAP+ + clip`.
+- The effect is budget-dependent (~0.04% PPL). **No speedup is claimed.**
 
-## 6. Equal-budget accept-only selection
+Per-seed numbers and the summary CSV:
+`results/sadnd_cap_gt_multiseed_qwen25_7b/` and `docs/results_summary.md`.
 
-`eval/select_sadnd_cap.py` compares candidates at the **same `fp_ratio`** and
-accepts one only if it beats SADND at that budget by `accept_only_margin`
-(default 0.001); otherwise it falls back to the best SADND baseline and records
-`clear_improvement=false`. No method is credited for using a larger FP budget.
+## Install
 
-## 6a. SADND-CAP+ (optional): cascade-aware & marginal-gain FP budget
-
-Transformer residual streams propagate quantization error across layers, so FP
-budget can be allocated by **accumulated cascade error**, not just local
-sensitivity:
-
+```bash
+pip install -e .
 ```
-e_l = ||h_l^q - h_l^fp|| / ||h_l^fp||      cascade_l = beta·cascade_{l-1} + e_l
-budget_score_l = local_sensitivity_l + gamma·cascade_l
+
+## Quickstart
+
+```bash
+pip install -e .
+python -m pytest tests/ -q
+python eval/run_tiny_sanity.py
+# validate the full StaticScale pipeline config without any GPU work:
+python eval/run_staticscale_smoke.py --dry_run
 ```
 
-`use_cascade_aware_budget` allocates the (same total) FP budget by `budget_score`;
-`use_marginal_gain_allocation` greedily spends FP where it removes the most error.
-Both are **off by default** and gated by the same equal-budget accept-only rule.
-Configs: `configs/sadnd_cap_cascade_select.json`, `sadnd_cap_cascade_fp0{06,10,20}.json`.
-These are policy/layout choices (no correction modules); on the near-lossless
-models tested, SADND-CAP's equal-budget effect is below the robustness margin
-(see §10), and SADND-CAP+ is not assumed to clear it — it must be verified per
-model. **No speedup is claimed.**
-
-## 7. Quick start
+Library usage:
 
 ```python
-from qlot_rms.config import QLotRmsConfig
-from qlot_rms.calibration import calibrate
-from qlot_rms.model_integration import patch_model, unpatch_model
+from staticscale import StaticScaleConfig, calibrate, patch_model, unpatch_model
 
-cfg = QLotRmsConfig.load_json("configs/sadnd_cap_fp006.json")
-plan = calibrate(model, tokenizer, cfg, device="cuda:0")
-handle = patch_model(model, plan, cfg)     # enable SADND-CAP
+cfg = StaticScaleConfig.load_json("configs/staticscale_qwen25_7b_fp020.json")
+plan = calibrate(model, tokenizer, cfg, device="cuda:0")   # static policy search
+handle = patch_model(model, plan, cfg)                      # enable StaticScale
 # ... run inference ...
-unpatch_model(handle)                      # restore original model exactly
+unpatch_model(handle)                                       # restore the model exactly
 ```
 
-## 8. Tests
+## Evaluation
 
 ```bash
-python -m pytest tests/ -q
-python eval/run_tiny_sanity.py             # offline, CPU, no download
+# equal-budget candidate selection (per-fp accept-only)
+python eval/run_staticscale_select.py --config configs/staticscale_select.json \
+    --model Qwen/Qwen2.5-7B --device cuda:0 --seq_len 2048 --max_chunks 64 \
+    --out_dir results/staticscale_qwen25_7b
+
+# multi-seed equal-budget robustness (clean SADND vs CAP+ vs StaticScale)
+python eval/run_staticscale_multiseed.py --model Qwen/Qwen2.5-7B \
+    --fp_ratio 0.20 --seeds 0,1,2 --max_chunks 64 \
+    --out_dir results/staticscale_multiseed_qwen25_7b
+
+# 7B model-zoo availability (no downloads) + fp-ratio matrix
+python eval/check_model_zoo_availability.py --zoo configs/model_zoo_7b.json
+python eval/run_7b_matrix.py --config configs/staticscale_7b_matrix.json
+
+# compact summary of a result dir
+python eval/summarize_staticscale_results.py --result_dir results/staticscale_qwen25_7b
 ```
 
-## 9. Evaluation
+## Documentation
 
-```bash
-# equal-budget selection on a small validation split
-python eval/select_sadnd_cap.py --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
-    --device cuda:0 --seq_len 1024 --max_chunks 32 \
-    --config configs/sadnd_cap_select.json --out_dir results/sadnd_cap_select
+- `docs/method.md` — method and formulas
+- `docs/results_summary.md` — measured results
+- `docs/reproducibility.md` — how to reproduce
+- `docs/negative_findings.md` — what did not work (removed correction methods; joint
+  mask-scale search; why the gain over `CAP+ + clip` is small)
+- `docs/api.md` — public API
+- `docs/figures.md` — figure scripts and assets
 
-# full WikiText-2 test (fp16 / int8_ptq / sadnd / output_aware / config)
-python eval/eval_perplexity.py --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
-    --device cuda:0 --seq_len 2048 \
-    --config configs/sadnd_cap_fp006.json --out_dir results/sadnd_cap_full
-```
+## Limitations
 
-## 10. Results summary
-
-See `docs/results_summary.md`. In the INT8-near-lossless regime tested
-(TinyLlama-1.1B, Qwen2.5-7B), INT8 PTQ and SADND are already near-lossless, and
-the prior *correction* methods (DC/OBC) did not robustly beat SADND at equal FP
-budget.
-
-- At **fp_ratio=0.06**, a multi-seed equal-budget check on Qwen2.5-7B shows base
-  SADND-CAP is consistently but only slightly better than clean SADND (mean
-  Δ = −0.0006 PPL, **0/3** seeds clear the 0.001 margin, `robust_better = False`)
-  — a weak, sub-margin trend.
-- At **fp_ratio=0.20**, a multi-seed check (seeds 0/1/2, 64 chunks) shows
-  **SADND-CAP+ (cascade-aware + marginal-gain FP budget) robustly beats clean
-  SADND at equal FP budget: mean Δ = −0.00185 PPL, std 0.00019, 3/3 seeds clear
-  the 0.001 margin, `robust_better = True`** (base SADND-CAP: mean Δ = −0.00129,
-  2/3 clearing). This is the **first method here to satisfy the multi-seed
-  equal-budget robustness criterion**.
-
-The improvement is **small but consistent** (~0.0018 PPL on a 6.58 baseline,
-~0.03%) and **budget-dependent** — robustness is shown at fp_ratio=0.20, not yet
-at fp_ratio=0.06. SADND-CAP remains a **policy/layout framework** (routing +
-budget + packing under an equal-budget accept-only rule); SADND-CAP+'s
-cascade/marginal budget is a useful extension, **not a large quality win**.
-**No speedup is claimed.**
-
-## 11. Limitations
-
-- `torch_reference` is **correctness-only** (fake quant + FP matmul); slower and
+- `torch_reference` is **correctness-only** (fake-quant + FP matmul); it is slower and
   higher-memory than FP16 by construction.
-- **No speedup claim**; a custom packed FP16+INT8 kernel is **not** implemented
-  (`custom_packed` is a stub; see `docs/serving_layout.md`).
-- Deprecated DC/OBC/GroupRMS/correction methods were removed from the active
-  code (git tag `backup-before-final-sadnd-cap-cleanup`).
-- End-to-end integration targets Llama/Mistral/Qwen2-style Pre-LN models whose
-  MLP is fed by `post_attention_layernorm`.
+- **No backend-independent speedup is claimed**; a real packed FP16+INT8 kernel is not
+  implemented (`custom_packed` is a stub). Packed-layout throughput numbers are
+  **prototype diagnostics only**.
+- Tested in the INT8-near-lossless regime (TinyLlama-1.1B, Qwen2.5-7B), where the
+  equal-budget effect is small; a decisive test would need a regime where INT8
+  materially degrades (e.g. lower-bit).
+- End-to-end integration targets Llama / Mistral / Qwen2-style Pre-LN models whose MLP
+  is fed by `post_attention_layernorm`.
+
+## Package layout
+
+`staticscale/` is the public package. The implementation currently lives in a
+legacy/internal package and is re-exported under stable StaticScale names; the legacy
+import path also works during the transition.

@@ -1,0 +1,49 @@
+{
+  "method": "sadnd_cap",
+  "enable_qlot_rms": true,
+  "qlot_scope": "mlp_only",
+  "routing_score": "output_aware_sadnd",
+
+  "fp_budget_mode": "equal_budget_select",
+  "fp_ratio": 0.20,
+  "fp_ratio_candidates": [0.06, 0.20],
+  "same_global_fp_budget": true,
+  "global_fp_budget_ratio": 0.20,
+
+  "int_permutation_mode": "packing_aware",
+  "accept_only_margin": 0.001,
+
+  "use_cascade_aware_budget": true,
+  "cascade_metric": "hidden_l2",
+  "cascade_beta": 0.9,
+  "cascade_gamma": 1.0,
+  "use_error_amplification": false,
+  "amplification_weight": 0.5,
+
+  "use_marginal_gain_allocation": true,
+  "marginal_gain_metric": "hidden_l2",
+  "marginal_fp_candidates": [0.0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.20],
+
+  "use_fp_mask_refinement": true,
+  "fp_refine_method": "greedy_swap",
+  "fp_refine_metric": "hidden_l2",
+  "fp_refine_candidate_pool": 32,
+  "fp_refine_max_swaps_per_layer": 8,
+  "fp_refine_margin": 0.0005,
+  "fp_refine_accept_only": true,
+  "fp_refine_preserve_budget": true,
+  "fp_refine_seed": 0,
+  "fp_refine_max_tokens": 256,
+
+  "backend": "torch_reference",
+  "calibration_samples": 128,
+  "calibration_seq_len": 512,
+  "num_calib_subsets": 5,
+  "subset_size": 32,
+  "p_proxy": 0.9995,
+  "p_act": 0.999,
+  "qmax": 127,
+  "w8_group_size": 128,
+  "seed": 0,
+  "dataset": "wikitext2"
+}

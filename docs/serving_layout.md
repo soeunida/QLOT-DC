@@ -1,9 +1,10 @@
-# SADND-CAP serving layout
+# StaticScale serving layout (packed FP/INT prototype)
 
-This describes the static per-layer layout a serving kernel would consume.
-**Experimental / reference-only:** the default `torch_reference` backend is
-fake-quantized (dequant + FP matmul); `custom_packed` is a stub. No speedup is
-claimed and no real kernel is implemented.
+This describes the static per-layer layout a serving kernel would consume — the
+**packed FP/INT prototype**. **Experimental / reference-only:** the default
+`torch_reference` backend is fake-quantized (dequant + FP matmul); `custom_packed`
+is a stub. No backend-independent speedup is claimed and no real kernel is
+implemented; any throughput figures are **prototype diagnostics only**.
 
 ## `[FP block | INT block]`
 
@@ -53,6 +54,6 @@ more uniform reduces quantization error. The order is frozen in
   over the INT block, summed in FP32 → FP16) must pass correctness tests vs the
   reference before being enabled. Until then, **no speedup is claimed**.
 
-Export static artifacts with `python -m qlot_rms.serving_export` (writes
+Export static artifacts with `python -m staticscale.serving_export` (writes
 `indices.pt`, `scales.pt`, `gate.pt`, `up.pt`, `meta.json`, `manifest.json`).
 Validate readiness with `eval/check_custom_packed_readiness.py`.
