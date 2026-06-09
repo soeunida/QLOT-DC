@@ -1,5 +1,7 @@
 # StaticScale
 
+[![CI](https://github.com/soeunida/QLOT-DC/actions/workflows/ci.yml/badge.svg)](https://github.com/soeunida/QLOT-DC/actions/workflows/ci.yml)
+
 **Calibration-Time FP/INT Routing and Static INT Scale Tuning for Transformer Inference**
 
 StaticScale is a **training-free, calibration-time static policy search** for INT8
